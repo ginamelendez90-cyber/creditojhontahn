@@ -44,7 +44,12 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
       data = ws.get_all_records()
       if not data:
         return pd.DataFrame(columns=columnas_por_defecto)
-      return pd.DataFrame(data)
+      df = pd.DataFrame(data)
+      # Asegurar que existan todas las columnas por defecto si la hoja está desactualizada
+      for col in columnas_por_defecto:
+        if col not in df.columns:
+          df[col] = 0.0 if "Monto" in col or "Saldo" in col or "Gastos" in col else ""
+      return df
     except Exception:
       ws = sh.add_worksheet(title=worksheet_name, rows="1000", cols="20")
       ws.append_row(columnas_por_defecto)
@@ -54,24 +59,32 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
     return pd.DataFrame(columns=columnas_por_defecto)
 
 
-# Inicializar datos en la sesión
+# Inicializar datos en la sesión y forzar tipos numéricos correctos
 if "creditos" not in st.session_state:
   df_c = cargar_datos("creditos", ["ID", "Cliente", "Monto_Total", "Modalidad", "Plazo", "Cuota_Valor", "Estado"])
+  if not df_c.empty:
+    df_c["Monto_Total"] = pd.to_numeric(df_c["Monto_Total"], errors="coerce").fillna(0.0)
+    df_c["Cuota_Valor"] = pd.to_numeric(df_c["Cuota_Valor"], errors="coerce").fillna(0.0)
   st.session_state.creditos = df_c.to_dict("records") if not df_c.empty else []
 
 if "pagos" not in st.session_state:
-  st.session_state.pagos = cargar_datos("pagos", ["ID_Credito", "Cuota_N", "Monto_Cuota", "Monto_Pagado", "Estado", "Metodo_Pago", "Fecha_Pago"])
-  if not st.session_state.pagos.empty and "Monto_Pagado" not in st.session_state.pagos.columns:
-    st.session_state.pagos["Monto_Pagado"] = 0.0
+  df_p = cargar_datos("pagos", ["ID_Credito", "Cuota_N", "Monto_Cuota", "Monto_Pagado", "Estado", "Metodo_Pago", "Fecha_Pago"])
+  df_p["Monto_Cuota"] = pd.to_numeric(df_p["Monto_Cuota"], errors="coerce").fillna(0.0)
+  df_p["Monto_Pagado"] = pd.to_numeric(df_p["Monto_Pagado"], errors="coerce").fillna(0.0)
+  st.session_state.pagos = df_p
 
 if "transacciones" not in st.session_state:
   df_t = cargar_datos("transacciones", ["ID_Credito", "Cliente", "Monto_Abonado", "Metodo_Pago", "Fecha_Pago", "Descripcion"])
-  if not df_t.empty and "Descripcion" not in df_t.columns:
+  df_t["Monto_Abonado"] = pd.to_numeric(df_t["Monto_Abonado"], errors="coerce").fillna(0.0)
+  if "Descripcion" not in df_t.columns:
     df_t["Descripcion"] = ""
   st.session_state.transacciones = df_t
 
 if "caja_diaria" not in st.session_state:
-  st.session_state.caja_diaria = cargar_datos("caja_diaria", ["Fecha", "Saldo_Inicial", "Gastos_Dia", "Notas_Gastos"])
+  df_cd = cargar_datos("caja_diaria", ["Fecha", "Saldo_Inicial", "Gastos_Dia", "Notas_Gastos"])
+  df_cd["Saldo_Inicial"] = pd.to_numeric(df_cd["Saldo_Inicial"], errors="coerce").fillna(0.0)
+  df_cd["Gastos_Dia"] = pd.to_numeric(df_cd["Gastos_Dia"], errors="coerce").fillna(0.0)
+  st.session_state.caja_diaria = df_cd
 
 
 def guardar_en_sheets():
@@ -143,14 +156,14 @@ if menu == "Registrar Nuevo Crédito":
     if submit:
       if nombre_cliente and monto_total > 0 and num_cuotas > 0:
         id_credito = len(st.session_state.creditos) + 1
-        monto_cuota = monto_total / num_cuotas
+        monto_cuota = float(monto_total / num_cuotas)
 
         nuevo_credito = {
             "ID": id_credito,
             "Cliente": nombre_cliente,
-            "Monto_Total": monto_total,
+            "Monto_Total": float(monto_total),
             "Modalidad": modalidad,
-            "Plazo": num_cuotas,
+            "Plazo": int(num_cuotas),
             "Cuota_Valor": monto_cuota,
             "Estado": "Activo",
         }
@@ -169,6 +182,9 @@ if menu == "Registrar Nuevo Crédito":
           })
 
         df_nuevos_pagos = pd.DataFrame(nuevas_filas)
+        df_nuevos_pagos["Monto_Cuota"] = pd.to_numeric(df_nuevos_pagos["Monto_Cuota"], errors="coerce").fillna(0.0)
+        df_nuevos_pagos["Monto_Pagado"] = pd.to_numeric(df_nuevos_pagos["Monto_Pagado"], errors="coerce").fillna(0.0)
+
         st.session_state.pagos = pd.concat([st.session_state.pagos, df_nuevos_pagos], ignore_index=True)
 
         guardar_en_sheets()
@@ -193,13 +209,17 @@ elif menu == "Panel de Cobros y Pagos":
 
     credito_info = next(c for c in st.session_state.creditos if c['ID'] == id_activo)
 
+    # Asegurar tipos numéricos antes de filtrar y sumar
+    st.session_state.pagos["Monto_Pagado"] = pd.to_numeric(st.session_state.pagos["Monto_Pagado"], errors="coerce").fillna(0.0)
+    st.session_state.pagos["Monto_Cuota"] = pd.to_numeric(st.session_state.pagos["Monto_Cuota"], errors="coerce").fillna(0.0)
+
     df_pagos_credito = st.session_state.pagos[st.session_state.pagos["ID_Credito"] == id_activo]
-    total_abonado = df_pagos_credito["Monto_Pagado"].sum()
-    saldo_restante = credito_info["Monto_Total"] - total_abonado
+    total_abonado = float(df_pagos_credito["Monto_Pagado"].sum())
+    saldo_restante = float(credito_info["Monto_Total"]) - total_abonado
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Cliente", credito_info["Cliente"])
-    col2.metric("Total Deuda", f"${credito_info['Monto_Total']:.2f}")
+    col2.metric("Total Deuda", f"${float(credito_info['Monto_Total']):.2f}")
     col3.metric("Abonado", f"${total_abonado:.2f}")
     col4.metric("Saldo Restante", f"${saldo_restante:.2f}")
 
@@ -217,7 +237,7 @@ elif menu == "Panel de Cobros y Pagos":
       btn_abonar = st.form_submit_button("Aplicar Abono")
 
       if btn_abonar:
-        restante_por_aplicar = monto_abono
+        restante_por_aplicar = float(monto_abono)
         indices_cuotas = df_pagos_credito.index[df_pagos_credito["Estado"] != "Pagado"]
 
         if len(indices_cuotas) == 0:
@@ -228,29 +248,31 @@ elif menu == "Panel de Cobros y Pagos":
               break
 
             cuota_actual = st.session_state.pagos.loc[idx]
-            deuda_cuota = cuota_actual["Monto_Cuota"] - cuota_actual["Monto_Pagado"]
+            deuda_cuota = float(cuota_actual["Monto_Cuota"]) - float(cuota_actual["Monto_Pagado"])
 
             if restante_por_aplicar >= deuda_cuota:
               restante_por_aplicar -= deuda_cuota
-              st.session_state.pagos.loc[idx, "Monto_Pagado"] += deuda_cuota
+              st.session_state.pagos.loc[idx, "Monto_Pagado"] = float(cuota_actual["Monto_Pagado"]) + deuda_cuota
               st.session_state.pagos.loc[idx, "Estado"] = "Pagado"
               st.session_state.pagos.loc[idx, "Metodo_Pago"] = metodo
               st.session_state.pagos.loc[idx, "Fecha_Pago"] = str(fecha)
             else:
-              st.session_state.pagos.loc[idx, "Monto_Pagado"] += restante_por_aplicar
+              st.session_state.pagos.loc[idx, "Monto_Pagado"] = float(cuota_actual["Monto_Pagado"]) + restante_por_aplicar
               st.session_state.pagos.loc[idx, "Estado"] = "Abonado"
               st.session_state.pagos.loc[idx, "Metodo_Pago"] = metodo
               st.session_state.pagos.loc[idx, "Fecha_Pago"] = str(fecha)
-              restante_por_aplicar = 0
+              restante_por_aplicar = 0.0
 
           nueva_transaccion = pd.DataFrame([{
               "ID_Credito": id_activo,
               "Cliente": credito_info["Cliente"],
-              "Monto_Abonado": monto_abono,
+              "Monto_Abonado": float(monto_abono),
               "Metodo_Pago": metodo,
               "Fecha_Pago": str(fecha),
               "Descripcion": descripcion_pago if descripcion_pago else "N/A",
           }])
+          nueva_transaccion["Monto_Abonado"] = pd.to_numeric(nueva_transaccion["Monto_Abonado"], errors="coerce").fillna(0.0)
+          
           st.session_state.transacciones = pd.concat([st.session_state.transacciones, nueva_transaccion], ignore_index=True)
 
           guardar_en_sheets()
@@ -284,7 +306,9 @@ elif menu == "Historial de Pagos del Día":
   if st.session_state.transacciones.empty:
     st.info("No hay pagos o abonos registrados todavía.")
   else:
+    st.session_state.transacciones["Monto_Abonado"] = pd.to_numeric(st.session_state.transacciones["Monto_Abonado"], errors="coerce").fillna(0.0)
     fechas_disponibles = sorted(st.session_state.transacciones["Fecha_Pago"].unique().tolist())
+    
     if not fechas_disponibles:
       st.info("No hay fechas de pago válidas.")
     else:
@@ -292,10 +316,9 @@ elif menu == "Historial de Pagos del Día":
 
       df_filtrado_fecha = st.session_state.transacciones[st.session_state.transacciones["Fecha_Pago"] == fecha_seleccionada]
 
-      # Desglose de cobros del día por método
-      total_efectivo = df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Efectivo"]["Monto_Abonado"].sum()
-      total_pago_movil = df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Pago Móvil"]["Monto_Abonado"].sum()
-      total_binance = df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Binance"]["Monto_Abonado"].sum()
+      total_efectivo = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Efectivo"]["Monto_Abonado"].sum())
+      total_pago_movil = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Pago Móvil"]["Monto_Abonado"].sum())
+      total_binance = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Binance"]["Monto_Abonado"].sum())
       total_cobrado_dia = total_efectivo + total_pago_movil + total_binance
 
       st.subheader(f"📊 Resumen de Cobros: {fecha_seleccionada}")
@@ -307,6 +330,9 @@ elif menu == "Historial de Pagos del Día":
 
       st.markdown("---")
       st.subheader("⚙️ Cuadre de Caja (Efectivo)")
+
+      st.session_state.caja_diaria["Saldo_Inicial"] = pd.to_numeric(st.session_state.caja_diaria["Saldo_Inicial"], errors="coerce").fillna(0.0)
+      st.session_state.caja_diaria["Gastos_Dia"] = pd.to_numeric(st.session_state.caja_diaria["Gastos_Dia"], errors="coerce").fillna(0.0)
 
       df_caja = st.session_state.caja_diaria
       registro_existente = df_caja[df_caja["Fecha"] == fecha_seleccionada]
@@ -333,22 +359,25 @@ elif menu == "Historial de Pagos del Día":
         if btn_guardar_caja:
           if not registro_existente.empty:
             idx_reg = registro_existente.index[0]
-            st.session_state.caja_diaria.loc[idx_reg, "Saldo_Inicial"] = saldo_inicial
-            st.session_state.caja_diaria.loc[idx_reg, "Gastos_Dia"] = gastos_dia
+            st.session_state.caja_diaria.loc[idx_reg, "Saldo_Inicial"] = float(saldo_inicial)
+            st.session_state.caja_diaria.loc[idx_reg, "Gastos_Dia"] = float(gastos_dia)
             st.session_state.caja_diaria.loc[idx_reg, "Notas_Gastos"] = notas_gastos
           else:
             nuevo_registro_caja = pd.DataFrame([{
                 "Fecha": fecha_seleccionada,
-                "Saldo_Inicial": saldo_inicial,
-                "Gastos_Dia": gastos_dia,
+                "Saldo_Inicial": float(saldo_inicial),
+                "Gastos_Dia": float(gastos_dia),
                 "Notas_Gastos": notas_gastos,
             }])
+            nuevo_registro_caja["Saldo_Inicial"] = pd.to_numeric(nuevo_registro_caja["Saldo_Inicial"], errors="coerce").fillna(0.0)
+            nuevo_registro_caja["Gastos_Dia"] = pd.to_numeric(nuevo_registro_caja["Gastos_Dia"], errors="coerce").fillna(0.0)
+            
             st.session_state.caja_diaria = pd.concat([st.session_state.caja_diaria, nuevo_registro_caja], ignore_index=True)
 
           guardar_en_sheets()
           st.success("✅ ¡Cuadre de caja actualizado y guardado en Google Sheets!")
 
-      efectivo_final_caja = saldo_inicial + total_efectivo - gastos_dia
+      efectivo_final_caja = float(saldo_inicial) + total_efectivo - float(gastos_dia)
 
       st.markdown("### 💰 Resultado del Cuadre")
       c1, c2, c3, c4 = st.columns(4)
