@@ -47,7 +47,7 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
       df = pd.DataFrame(data)
       for col in columnas_por_defecto:
         if col not in df.columns:
-          df[col] = 0.0 if "Monto" in col or "Saldo" in col or "Gastos" in col else ""
+          df[col] = 0.0 if "Monto" in col or "Saldo" in col or "Gastos" in col or "Prestado" in col else ""
       return df
     except Exception:
       ws = sh.add_worksheet(title=worksheet_name, rows="1000", cols="20")
@@ -60,9 +60,10 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
 
 # Inicializar datos en la sesión y forzar tipos numéricos correctos
 if "creditos" not in st.session_state:
-  df_c = cargar_datos("creditos", ["ID", "Cliente", "Monto_Total", "Modalidad", "Plazo", "Cuota_Valor", "Estado"])
+  df_c = cargar_datos("creditos", ["ID", "Cliente", "Monto_Total", "Monto_Prestado", "Modalidad", "Plazo", "Cuota_Valor", "Metodo_Salida", "Fecha_Prestamo", "Estado"])
   if not df_c.empty:
     df_c["Monto_Total"] = pd.to_numeric(df_c["Monto_Total"], errors="coerce").fillna(0.0)
+    df_c["Monto_Prestado"] = pd.to_numeric(df_c["Monto_Prestado"], errors="coerce").fillna(0.0)
     df_c["Cuota_Valor"] = pd.to_numeric(df_c["Cuota_Valor"], errors="coerce").fillna(0.0)
   st.session_state.creditos = df_c.to_dict("records") if not df_c.empty else []
 
@@ -95,8 +96,15 @@ def guardar_en_sheets():
     spreadsheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
     sh = client.open_by_url(spreadsheet_url)
 
+    # Asegurar columnas actualizadas para créditos
+    cols_creditos = ["ID", "Cliente", "Monto_Total", "Monto_Prestado", "Modalidad", "Plazo", "Cuota_Valor", "Metodo_Salida", "Fecha_Prestamo", "Estado"]
+    df_creditos_to_save = pd.DataFrame(st.session_state.creditos) if st.session_state.creditos else pd.DataFrame(columns=cols_creditos)
+    for col in cols_creditos:
+      if col not in df_creditos_to_save.columns:
+        df_creditos_to_save[col] = 0.0 if "Monto" in col else ""
+
     dic_datos = {
-        "creditos": pd.DataFrame(st.session_state.creditos) if st.session_state.creditos else pd.DataFrame(columns=["ID", "Cliente", "Monto_Total", "Modalidad", "Plazo", "Cuota_Valor", "Estado"]),
+        "creditos": df_creditos_to_save,
         "pagos": st.session_state.pagos,
         "transacciones": st.session_state.transacciones,
         "caja_diaria": st.session_state.caja_diaria,
@@ -142,8 +150,20 @@ if menu == "Registrar Nuevo Crédito":
 
   with st.form("form_credito", clear_on_submit=True):
     nombre_cliente = st.text_input("Nombre del Cliente")
-    monto_total = st.number_input("Monto Total a Deber (con intereses)", min_value=0.0, step=10.0, format="%.2f")
-    modalidad = st.selectbox("Modalidad de Cobro", ["Diario", "Semanal"])
+    
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+      monto_prestado = st.number_input("Monto Real Prestado (Capital que entregas)", min_value=0.0, step=10.0, format="%.2f")
+    with col_p2:
+      monto_total = st.number_input("Monto Total a Deber (con intereses)", min_value=0.0, step=10.0, format="%.2f")
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+      metodo_salida = st.selectbox("¿De dónde salió el dinero?", ["Efectivo", "Pago Móvil", "Binance"])
+    with col_m2:
+      modalidad = st.selectbox("Modalidad de Cobro", ["Diario", "Semanal"])
+    with col_m3:
+      fecha_prestamo = st.date_input("Fecha del Préstamo")
 
     if modalidad == "Diario":
       num_cuotas = st.number_input("Cantidad de Días de Pago", min_value=1, max_value=365, value=24, step=1)
@@ -153,7 +173,7 @@ if menu == "Registrar Nuevo Crédito":
     submit = st.form_submit_button("Crear Crédito")
 
     if submit:
-      if nombre_cliente and monto_total > 0 and num_cuotas > 0:
+      if nombre_cliente and monto_total > 0 and monto_prestado > 0 and num_cuotas > 0:
         id_credito = len(st.session_state.creditos) + 1
         monto_cuota = float(monto_total / num_cuotas)
 
@@ -161,9 +181,12 @@ if menu == "Registrar Nuevo Crédito":
             "ID": id_credito,
             "Cliente": nombre_cliente,
             "Monto_Total": float(monto_total),
+            "Monto_Prestado": float(monto_prestado),
             "Modalidad": modalidad,
             "Plazo": int(num_cuotas),
             "Cuota_Valor": monto_cuota,
+            "Metodo_Salida": metodo_salida,
+            "Fecha_Prestamo": str(fecha_prestamo),
             "Estado": "Activo",
         }
         st.session_state.creditos.append(nuevo_credito)
@@ -189,7 +212,7 @@ if menu == "Registrar Nuevo Crédito":
         st.session_state.pagos["Monto_Cuota"] = pd.to_numeric(st.session_state.pagos["Monto_Cuota"], errors="coerce").fillna(0.0)
 
         guardar_en_sheets()
-        st.success(f"✅ ¡Crédito #{id_credito} creado y guardado en Google Sheets para {nombre_cliente}!")
+        st.success(f"✅ ¡Crédito #{id_credito} creado para {nombre_cliente} saliente de {metodo_salida}!")
       else:
         st.error("Por favor completa todos los campos correctamente.")
 
@@ -308,94 +331,114 @@ elif menu == "Panel de Cobros y Pagos":
 elif menu == "Historial de Pagos del Día":
   st.header("📅 Historial de Pagos y Cuadre de Caja Diario")
 
-  if st.session_state.transacciones.empty:
-    st.info("No hay pagos o abonos registrados todavía.")
-  else:
-    st.session_state.transacciones["Monto_Abonado"] = pd.to_numeric(st.session_state.transacciones["Monto_Abonado"], errors="coerce").fillna(0.0)
-    fechas_disponibles = sorted(st.session_state.transacciones["Fecha_Pago"].unique().tolist())
-    
-    if not fechas_disponibles:
-      st.info("No hay fechas de pago válidas.")
-    else:
-      fecha_seleccionada = st.selectbox("Seleccionar Fecha de Cobro", fechas_disponibles)
+  # Recopilar fechas tanto de transacciones de pago como de préstamos creados
+  fechas_transacciones = st.session_state.transacciones["Fecha_Pago"].unique().tolist() if not st.session_state.transacciones.empty else []
+  fechas_prestamos = [c.get("Fecha_Prestamo") for c in st.session_state.creditos if c.get("Fecha_Prestamo")]
+  fechas_caja = st.session_state.caja_diaria["Fecha"].unique().tolist() if not st.session_state.caja_diaria.empty else []
 
+  fechas_disponibles = sorted(list(set(fechas_transacciones + fechas_prestamos + fechas_caja)))
+  
+  if not fechas_disponibles:
+    st.info("No hay registros de pagos o préstamos todavía.")
+  else:
+    fecha_seleccionada = st.selectbox("Seleccionar Fecha de Operación", fechas_disponibles)
+
+    # 1. Cobros del día
+    df_filtrado_fecha = pd.DataFrame()
+    if not st.session_state.transacciones.empty and "Fecha_Pago" in st.session_state.transacciones.columns:
       df_filtrado_fecha = st.session_state.transacciones[st.session_state.transacciones["Fecha_Pago"] == fecha_seleccionada]
 
-      total_efectivo = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Efectivo"]["Monto_Abonado"].sum())
-      total_pago_movil = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Pago Móvil"]["Monto_Abonado"].sum())
-      total_binance = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Binance"]["Monto_Abonado"].sum())
-      total_cobrado_dia = total_efectivo + total_pago_movil + total_binance
+    total_efectivo_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Efectivo"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
+    total_pago_movil_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Pago Móvil"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
+    total_binance_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Binance"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
+    total_cobrado_dia = total_efectivo_cobrado + total_pago_movil_cobrado + total_binance_cobrado
 
-      st.subheader(f"📊 Resumen de Cobros: {fecha_seleccionada}")
-      col1, col2, col3, col4 = st.columns(4)
-      col1.metric("💵 Efectivo Cobrado", f"${total_efectivo:.2f}")
-      col2.metric("📱 Pago Móvil", f"${total_pago_movil:.2f}")
-      col3.metric("🪙 Binance", f"${total_binance:.2f}")
-      col4.metric("📈 Total Cobrado", f"${total_cobrado_dia:.2f}")
+    # 2. Préstamos otorgados en el día (dinero que salió)
+    creditos_del_dia = [c for c in st.session_state.creditos if c.get("Fecha_Prestamo") == fecha_seleccionada]
+    prestado_efectivo = sum(float(c.get("Monto_Prestado", 0)) for c in creditos_del_dia if c.get("Metodo_Salida") == "Efectivo")
+    prestado_pago_movil = sum(float(c.get("Monto_Prestado", 0)) for c in creditos_del_dia if c.get("Metodo_Salida") == "Pago Móvil")
+    prestado_binance = sum(float(c.get("Monto_Prestado", 0)) for c in creditos_del_dia if c.get("Metodo_Salida") == "Binance")
+    total_prestado_dia = prestado_efectivo + prestado_pago_movil + prestado_binance
 
-      st.markdown("---")
-      st.subheader("⚙️ Cuadre de Caja (Efectivo y General)")
+    st.subheader(f"📊 Resumen de Movimientos: {fecha_seleccionada}")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("💵 Efectivo Cobrado", f"${total_efectivo_cobrado:.2f}", delta=f"Prestado: -${prestado_efectivo:.2f}" if prestado_efectivo > 0 else None)
+    col2.metric("📱 Pago Móvil", f"${total_pago_movil_cobrado:.2f}", delta=f"Prestado: -${prestado_pago_movil:.2f}" if prestado_pago_movil > 0 else None)
+    col3.metric("🪙 Binance", f"${total_binance_cobrado:.2f}", delta=f"Prestado: -${prestado_binance:.2f}" if prestado_binance > 0 else None)
+    col4.metric("📈 Total Cobrado", f"${total_cobrado_dia:.2f}", delta=f"Total Prestado: -${total_prestado_dia:.2f}" if total_prestado_dia > 0 else None)
 
-      st.session_state.caja_diaria["Saldo_Inicial"] = pd.to_numeric(st.session_state.caja_diaria["Saldo_Inicial"], errors="coerce").fillna(0.0)
-      st.session_state.caja_diaria["Gastos_Dia"] = pd.to_numeric(st.session_state.caja_diaria["Gastos_Dia"], errors="coerce").fillna(0.0)
+    st.markdown("---")
+    st.subheader("⚙️ Cuadre de Caja (Efectivo y General)")
 
-      df_caja = st.session_state.caja_diaria
-      registro_existente = df_caja[df_caja["Fecha"] == fecha_seleccionada]
+    st.session_state.caja_diaria["Saldo_Inicial"] = pd.to_numeric(st.session_state.caja_diaria["Saldo_Inicial"], errors="coerce").fillna(0.0)
+    st.session_state.caja_diaria["Gastos_Dia"] = pd.to_numeric(st.session_state.caja_diaria["Gastos_Dia"], errors="coerce").fillna(0.0)
 
-      default_saldo_inicial = 0.0
-      default_gastos = 0.0
-      default_notas = ""
+    df_caja = st.session_state.caja_diaria
+    registro_existente = df_caja[df_caja["Fecha"] == fecha_seleccionada]
 
-      if not registro_existente.empty:
-        default_saldo_inicial = float(registro_existente.iloc[0]["Saldo_Inicial"])
-        default_gastos = float(registro_existente.iloc[0]["Gastos_Dia"])
-        default_notas = str(registro_existente.iloc[0]["Notas_Gastos"])
+    default_saldo_inicial = 0.0
+    default_gastos = 0.0
+    default_notas = ""
 
-      with st.form(f"form_caja_{fecha_seleccionada}"):
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
-          saldo_inicial = st.number_input("¿Con cuánto saldo/efectivo sales hoy?", min_value=0.0, value=default_saldo_inicial, step=1.0, format="%.2f")
-        with col_s2:
-          gastos_dia = st.number_input("Gastos del día (salidas de efectivo)", min_value=0.0, value=default_gastos, step=1.0, format="%.2f")
+    if not registro_existente.empty:
+      default_saldo_inicial = float(registro_existente.iloc[0]["Saldo_Inicial"])
+      default_gastos = float(registro_existente.iloc[0]["Gastos_Dia"])
+      default_notas = str(registro_existente.iloc[0]["Notas_Gastos"])
 
-        notas_gastos = st.text_input("Descripción de los gastos (Opcional)", value=default_notas)
-        btn_guardar_caja = st.form_submit_button("Guardar Cuadre de Caja")
+    with st.form(f"form_caja_{fecha_seleccionada}"):
+      col_s1, col_s2 = st.columns(2)
+      with col_s1:
+        saldo_inicial = st.number_input("¿Con cuánto saldo/efectivo sales hoy?", min_value=0.0, value=default_saldo_inicial, step=1.0, format="%.2f")
+      with col_s2:
+        gastos_dia = st.number_input("Gastos operativos del día (salidas adicionales de efectivo)", min_value=0.0, value=default_gastos, step=1.0, format="%.2f")
 
-        if btn_guardar_caja:
-          if not registro_existente.empty:
-            idx_reg = registro_existente.index[0]
-            st.session_state.caja_diaria.loc[idx_reg, "Saldo_Inicial"] = float(saldo_inicial)
-            st.session_state.caja_diaria.loc[idx_reg, "Gastos_Dia"] = float(gastos_dia)
-            st.session_state.caja_diaria.loc[idx_reg, "Notas_Gastos"] = notas_gastos
-          else:
-            nuevo_registro_caja = pd.DataFrame([{
-                "Fecha": fecha_seleccionada,
-                "Saldo_Inicial": float(saldo_inicial),
-                "Gastos_Dia": float(gastos_dia),
-                "Notas_Gastos": notas_gastos,
-            }])
-            nuevo_registro_caja["Saldo_Inicial"] = pd.to_numeric(nuevo_registro_caja["Saldo_Inicial"], errors="coerce").fillna(0.0)
-            nuevo_registro_caja["Gastos_Dia"] = pd.to_numeric(nuevo_registro_caja["Gastos_Dia"], errors="coerce").fillna(0.0)
-            
-            st.session_state.caja_diaria = pd.concat([st.session_state.caja_diaria, nuevo_registro_caja], ignore_index=True)
+      notas_gastos = st.text_input("Descripción de los gastos (Opcional)", value=default_notas)
+      btn_guardar_caja = st.form_submit_button("Guardar Cuadre de Caja")
 
-          guardar_en_sheets()
-          st.success("✅ ¡Cuadre de caja actualizado y guardado en Google Sheets!")
+      if btn_guardar_caja:
+        if not registro_existente.empty:
+          idx_reg = registro_existente.index[0]
+          st.session_state.caja_diaria.loc[idx_reg, "Saldo_Inicial"] = float(saldo_inicial)
+          st.session_state.caja_diaria.loc[idx_reg, "Gastos_Dia"] = float(gastos_dia)
+          st.session_state.caja_diaria.loc[idx_reg, "Notas_Gastos"] = notas_gastos
+        else:
+          nuevo_registro_caja = pd.DataFrame([{
+              "Fecha": fecha_seleccionada,
+              "Saldo_Inicial": float(saldo_inicial),
+              "Gastos_Dia": float(gastos_dia),
+              "Notas_Gastos": notas_gastos,
+          }])
+          nuevo_registro_caja["Saldo_Inicial"] = pd.to_numeric(nuevo_registro_caja["Saldo_Inicial"], errors="coerce").fillna(0.0)
+          nuevo_registro_caja["Gastos_Dia"] = pd.to_numeric(nuevo_registro_caja["Gastos_Dia"], errors="coerce").fillna(0.0)
+          
+          st.session_state.caja_diaria = pd.concat([st.session_state.caja_diaria, nuevo_registro_caja], ignore_index=True)
 
-      # Cálculos para reflejar tanto la caja de efectivo como el acumulado total
-      efectivo_final_caja = float(saldo_inicial) + total_efectivo - float(gastos_dia)
-      total_general_dia = float(saldo_inicial) + total_cobrado_dia - float(gastos_dia)
+        guardar_en_sheets()
+        st.success("✅ ¡Cuadre de caja actualizado y guardado en Google Sheets!")
 
-      st.markdown("### 💰 Resultado del Cuadre")
-      c1, c2, c3, c4 = st.columns(4)
-      c1.metric("Saldo Inicial", f"${saldo_inicial:.2f}")
-      c2.metric("Total Cobrado (General)", f"${total_cobrado_dia:.2f}", delta=f"Efectivo: ${total_efectivo:.2f}")
-      c3.metric("Gastos del Día", f"-${gastos_dia:.2f}")
-      c4.metric("Total General en Caja/Bancos", f"${total_general_dia:.2f}", delta=f"Efectivo en mano: ${efectivo_final_caja:.2f}")
+    # Cálculos descontando tanto gastos operativos como los créditos prestados en efectivo / general
+    efectivo_final_caja = float(saldo_inicial) + total_efectivo_cobrado - float(gastos_dia) - prestado_efectivo
+    total_general_dia = float(saldo_inicial) + total_cobrado_dia - float(gastos_dia) - total_prestado_dia
 
-      st.markdown("---")
-      st.subheader("Detalle de transacciones de la fecha")
+    st.markdown("### 💰 Resultado del Cuadre")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Saldo Inicial", f"${saldo_inicial:.2f}")
+    c2.metric("Total Cobrado (General)", f"${total_cobrado_dia:.2f}", delta=f"Efectivo cobrado: ${total_efectivo_cobrado:.2f}")
+    c3.metric("Salidas del Día", f"-${(gastos_dia + total_prestado_dia):.2f}", delta=f"Prestado hoy: ${total_prestado_dia:.2f} | Gastos: ${gastos_dia:.2f}")
+    c4.metric("Total General Disponible", f"${total_general_dia:.2f}", delta=f"Efectivo en mano: ${efectivo_final_caja:.2f}")
+
+    st.markdown("---")
+    st.subheader("📋 Créditos otorgados en esta fecha")
+    if creditos_del_dia:
+      st.dataframe(pd.DataFrame(creditos_del_dia), use_container_width=True)
+    else:
+      st.info("No se otorgaron créditos en esta fecha específica.")
+
+    st.subheader("💳 Detalle de pagos/abonos recibidos en la fecha")
+    if not df_filtrado_fecha.empty:
       st.dataframe(df_filtrado_fecha, use_container_width=True)
+    else:
+      st.info("No hay transacciones de cobro registradas para esta fecha.")
 
 # ---------------------------------------------------------
 # 4. HISTORIAL Y CRÉDITOS CERRADOS
