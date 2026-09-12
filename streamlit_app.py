@@ -7,7 +7,6 @@ st.set_page_config(
     page_title="Control de Créditos y Cobros", page_icon="💰", layout="wide"
 )
 
-# Configuración de conexión nativa con GSpread usando st.secrets
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -17,12 +16,18 @@ scope = [
 @st.cache_resource
 def conectar_gsheets():
   try:
+    if "connections" not in st.secrets or "gsheets" not in st.secrets["connections"]:
+      st.error("⚠️ No se encontró la sección [connections.gsheets] en st.secrets.")
+      return None
+    
     creds_dict = dict(st.secrets["connections"]["gsheets"])
+    creds_dict.pop("client_secret", None) # Por si quedó guardado
+    
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(creds)
     return client
   except Exception as e:
-    st.error(f"Error de credenciales en st.secrets: {e}")
+    st.error(f"❌ Error al autenticar con Google: {e}")
     return None
 
 
@@ -46,45 +51,22 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
       ws.append_row(columnas_por_defecto)
       return pd.DataFrame(columns=columnas_por_defecto)
   except Exception as e:
+    st.warning(f"No se pudo cargar la pestaña '{worksheet_name}': {e}")
     return pd.DataFrame(columns=columnas_por_defecto)
 
 
-# Inicializar o sincronizar datos de Google Sheets en la sesión
+# Inicializar datos en la sesión
 if "creditos" not in st.session_state:
-  st.session_state.creditos = cargar_datos(
-      "creditos",
-      [
-          "ID",
-          "Cliente",
-          "Monto_Total",
-          "Modalidad",
-          "Plazo",
-          "Cuota_Valor",
-          "Estado",
-      ],
-  ).to_dict("records")
+  df_c = cargar_datos("creditos", ["ID", "Cliente", "Monto_Total", "Modalidad", "Plazo", "Cuota_Valor", "Estado"])
+  st.session_state.creditos = df_c.to_dict("records") if not df_c.empty else []
 
 if "pagos" not in st.session_state:
-  st.session_state.pagos = cargar_datos(
-      "pagos",
-      [
-          "ID_Credito",
-          "Cuota_N",
-          "Monto_Cuota",
-          "Monto_Pagado",
-          "Estado",
-          "Metodo_Pago",
-          "Fecha_Pago",
-      ],
-  )
-  if "Monto_Pagado" not in st.session_state.pagos.columns:
+  st.session_state.pagos = cargar_datos("pagos", ["ID_Credito", "Cuota_N", "Monto_Cuota", "Monto_Pagado", "Estado", "Metodo_Pago", "Fecha_Pago"])
+  if not st.session_state.pagos.empty and "Monto_Pagado" not in st.session_state.pagos.columns:
     st.session_state.pagos["Monto_Pagado"] = 0.0
 
 if "transacciones" not in st.session_state:
-  st.session_state.transacciones = cargar_datos(
-      "transacciones",
-      ["ID_Credito", "Cliente", "Monto_Abonado", "Metodo_Pago", "Fecha_Pago"],
-  )
+  st.session_state.transacciones = cargar_datos("transacciones", ["ID_Credito", "Cliente", "Monto_Abonado", "Metodo_Pago", "Fecha_Pago"])
 
 
 def guardar_en_sheets():
@@ -97,9 +79,7 @@ def guardar_en_sheets():
     sh = client.open_by_url(spreadsheet_url)
 
     dic_datos = {
-        "creditos": pd.DataFrame(st.session_state.creditos)
-        if isinstance(st.session_state.creditos, list)
-        else st.session_state.creditos,
+        "creditos": pd.DataFrame(st.session_state.creditos) if st.session_state.creditos else pd.DataFrame(columns=["ID", "Cliente", "Monto_Total", "Modalidad", "Plazo", "Cuota_Valor", "Estado"]),
         "pagos": st.session_state.pagos,
         "transacciones": st.session_state.transacciones,
     }
@@ -108,7 +88,7 @@ def guardar_en_sheets():
       try:
         ws = sh.worksheet(name)
       except:
-        ws = sh.add_worksheet(title=name, rows="1000", cols=len(df.columns) + 2)
+        ws = sh.add_worksheet(title=name, rows="1000", cols=20)
 
       ws.clear()
       if not df.empty:
@@ -138,41 +118,19 @@ menu = st.sidebar.selectbox(
 if menu == "Registrar Nuevo Crédito":
   st.header("📝 Registrar Nuevo Crédito")
 
-  creditos_activos = [
-      c for c in st.session_state.creditos if c["Estado"] == "Activo"
-  ]
+  creditos_activos = [c for c in st.session_state.creditos if c.get("Estado") == "Activo"]
   if creditos_activos:
-    st.warning(
-        "⚠️ Hay un crédito activo actualmente. Recuerda cerrarlo si vas a"
-        " otorgar uno nuevo."
-    )
+    st.warning("⚠️ Hay un crédito activo actualmente. Recuerda cerrarlo si vas a otorgar uno nuevo.")
 
   with st.form("form_credito", clear_on_submit=True):
     nombre_cliente = st.text_input("Nombre del Cliente")
-    monto_total = st.number_input(
-        "Monto Total a Deber (con intereses)",
-        min_value=0.0,
-        step=10.0,
-        format="%.2f",
-    )
+    monto_total = st.number_input("Monto Total a Deber (con intereses)", min_value=0.0, step=10.0, format="%.2f")
     modalidad = st.selectbox("Modalidad de Cobro", ["Diario", "Semanal"])
 
     if modalidad == "Diario":
-      num_cuotas = st.number_input(
-          "Cantidad de Días de Pago",
-          min_value=1,
-          max_value=365,
-          value=24,
-          step=1,
-      )
+      num_cuotas = st.number_input("Cantidad de Días de Pago", min_value=1, max_value=365, value=24, step=1)
     else:
-      num_cuotas = st.number_input(
-          "Cantidad de Semanas de Pago",
-          min_value=1,
-          max_value=52,
-          value=4,
-          step=1,
-      )
+      num_cuotas = st.number_input("Cantidad de Semanas de Pago", min_value=1, max_value=52, value=4, step=1)
 
     submit = st.form_submit_button("Crear Crédito")
 
@@ -194,28 +152,21 @@ if menu == "Registrar Nuevo Crédito":
 
         nuevas_filas = []
         for i in range(1, int(num_cuotas) + 1):
-          nuevas_filas.append(
-              {
-                  "ID_Credito": id_credito,
-                  "Cuota_N": i,
-                  "Monto_Cuota": monto_cuota,
-                  "Monto_Pagado": 0.0,
-                  "Estado": "Pendiente",
-                  "Metodo_Pago": "N/A",
-                  "Fecha_Pago": "N/A",
-              }
-          )
+          nuevas_filas.append({
+              "ID_Credito": id_credito,
+              "Cuota_N": i,
+              "Monto_Cuota": monto_cuota,
+              "Monto_Pagado": 0.0,
+              "Estado": "Pendiente",
+              "Metodo_Pago": "N/A",
+              "Fecha_Pago": "N/A",
+          })
 
         df_nuevos_pagos = pd.DataFrame(nuevas_filas)
-        st.session_state.pagos = pd.concat(
-            [st.session_state.pagos, df_nuevos_pagos], ignore_index=True
-        )
+        st.session_state.pagos = pd.concat([st.session_state.pagos, df_nuevos_pagos], ignore_index=True)
 
         guardar_en_sheets()
-        st.success(
-            f"✅ ¡Crédito #{id_credito} creado y guardado con éxito para"
-            f" {nombre_cliente}!"
-        )
+        st.success(f"✅ ¡Crédito #{id_credito} creado y guardado en Google Sheets para {nombre_cliente}!")
       else:
         st.error("Por favor completa todos los campos correctamente.")
 
@@ -225,31 +176,18 @@ if menu == "Registrar Nuevo Crédito":
 elif menu == "Panel de Cobros y Pagos":
   st.header("💵 Panel de Cobros Diarios y Semanales")
 
-  creditos_activos = [
-      c for c in st.session_state.creditos if c["Estado"] == "Activo"
-  ]
+  creditos_activos = [c for c in st.session_state.creditos if c.get("Estado") == "Activo"]
 
   if not creditos_activos:
     st.info("No hay créditos activos en este momento. Crea uno nuevo.")
   else:
-    opciones_credito = {
-        f"Crédito #{c['ID']} - {c['Cliente']} (Debe: {c['Monto_Total']})": c[
-            "ID"
-        ]
-        for c in creditos_activos
-    }
-    credito_seleccionado_str = st.selectbox(
-        "Seleccione el Crédito a Gestionar", list(opciones_credito.keys())
-    )
+    opciones_credito = {f"Crédito #{c['ID']} - {c['Cliente']} (Debe: {c['Monto_Total']})": c['ID'] for c in creditos_activos}
+    credito_seleccionado_str = st.selectbox("Seleccione el Crédito a Gestionar", list(opciones_credito.keys()))
     id_activo = opciones_credito[credito_seleccionado_str]
 
-    credito_info = next(
-        c for c in st.session_state.creditos if c["ID"] == id_activo
-    )
+    credito_info = next(c for c in st.session_state.creditos if c['ID'] == id_activo)
 
-    df_pagos_credito = st.session_state.pagos[
-        st.session_state.pagos["ID_Credito"] == id_activo
-    ]
+    df_pagos_credito = st.session_state.pagos[st.session_state.pagos["ID_Credito"] == id_activo]
     total_abonado = df_pagos_credito["Monto_Pagado"].sum()
     saldo_restante = credito_info["Monto_Total"] - total_abonado
 
@@ -265,24 +203,15 @@ elif menu == "Panel de Cobros y Pagos":
 
     st.markdown("### 💸 Registrar Pago o Abono Libre")
     with st.form("form_registrar_abono", clear_on_submit=True):
-      monto_abono = st.number_input(
-          "Monto del Abono / Pago recibido",
-          min_value=0.01,
-          step=1.0,
-          format="%.2f",
-      )
-      metodo = st.selectbox(
-          "Método de Pago", ["Pago Móvil", "Efectivo", "Binance"]
-      )
+      monto_abono = st.number_input("Monto del Abono / Pago recibido", min_value=0.01, step=1.0, format="%.2f")
+      metodo = st.selectbox("Método de Pago", ["Pago Móvil", "Efectivo", "Binance"])
       fecha = st.date_input("Fecha del Pago")
 
       btn_abonar = st.form_submit_button("Aplicar Abono")
 
       if btn_abonar:
         restante_por_aplicar = monto_abono
-        indices_cuotas = df_pagos_credito.index[
-            df_pagos_credito["Estado"] != "Pagado"
-        ]
+        indices_cuotas = df_pagos_credito.index[df_pagos_credito["Estado"] != "Pagado"]
 
         if len(indices_cuotas) == 0:
           st.warning("⚠️ Este crédito ya está completamente pagado.")
@@ -292,9 +221,7 @@ elif menu == "Panel de Cobros y Pagos":
               break
 
             cuota_actual = st.session_state.pagos.loc[idx]
-            deuda_cuota = (
-                cuota_actual["Monto_Cuota"] - cuota_actual["Monto_Pagado"]
-            )
+            deuda_cuota = cuota_actual["Monto_Cuota"] - cuota_actual["Monto_Pagado"]
 
             if restante_por_aplicar >= deuda_cuota:
               restante_por_aplicar -= deuda_cuota
@@ -303,54 +230,40 @@ elif menu == "Panel de Cobros y Pagos":
               st.session_state.pagos.loc[idx, "Metodo_Pago"] = metodo
               st.session_state.pagos.loc[idx, "Fecha_Pago"] = str(fecha)
             else:
-              st.session_state.pagos.loc[idx, "Monto_Pagado"] += (
-                  restante_por_aplicar
-              )
+              st.session_state.pagos.loc[idx, "Monto_Pagado"] += restante_por_aplicar
               st.session_state.pagos.loc[idx, "Estado"] = "Abonado"
               st.session_state.pagos.loc[idx, "Metodo_Pago"] = metodo
               st.session_state.pagos.loc[idx, "Fecha_Pago"] = str(fecha)
               restante_por_aplicar = 0
 
-          nueva_transaccion = pd.DataFrame([
-              {
-                  "ID_Credito": id_activo,
-                  "Cliente": credito_info["Cliente"],
-                  "Monto_Abonado": monto_abono,
-                  "Metodo_Pago": metodo,
-                  "Fecha_Pago": str(fecha),
-              }
-          ])
-          st.session_state.transacciones = pd.concat(
-              [st.session_state.transacciones, nueva_transaccion],
-              ignore_index=True,
-          )
+          nueva_transaccion = pd.DataFrame([{
+              "ID_Credito": id_activo,
+              "Cliente": credito_info["Cliente"],
+              "Monto_Abonado": monto_abono,
+              "Metodo_Pago": metodo,
+              "Fecha_Pago": str(fecha),
+          }])
+          st.session_state.transacciones = pd.concat([st.session_state.transacciones, nueva_transaccion], ignore_index=True)
 
           guardar_en_sheets()
-          st.success(
-              f"✅ Abono de ${monto_abono:.2f} registrado con éxito y respaldado."
-          )
+          st.success(f"✅ Abono de ${monto_abono:.2f} registrado y respaldado en Google Sheets.")
 
     st.markdown("---")
     st.subheader("🔒 Cerrar Crédito")
-    pendientes_restantes = len(
-        st.session_state.pagos[
-            (st.session_state.pagos["ID_Credito"] == id_activo)
-            & (st.session_state.pagos["Estado"] != "Pagado")
-        ]
-    )
+    pendientes_restantes = len(st.session_state.pagos[(st.session_state.pagos["ID_Credito"] == id_activo) & (st.session_state.pagos["Estado"] != "Pagado")])
 
     if pendientes_restantes == 0:
       if st.button("Cerrar Crédito Finalizado"):
         for c in st.session_state.creditos:
-          if c["ID"] == id_activo:
-            c["Estado"] = "Cerrado"
+          if c['ID'] == id_activo:
+            c['Estado'] = "Cerrado"
         guardar_en_sheets()
         st.success("🔒 El crédito se ha cerrado correctamente.")
     else:
       if st.button("Forzar Cierre de Crédito"):
         for c in st.session_state.creditos:
-          if c["ID"] == id_activo:
-            c["Estado"] = "Cerrado"
+          if c['ID'] == id_activo:
+            c['Estado'] = "Cerrado"
         guardar_en_sheets()
         st.warning("⚠️ Crédito cerrado manualmente con deudas.")
 
@@ -363,29 +276,17 @@ elif menu == "Historial de Pagos del Día":
   if st.session_state.transacciones.empty:
     st.info("No hay pagos o abonos registrados todavía.")
   else:
-    fechas_disponibles = sorted(
-        st.session_state.transacciones["Fecha_Pago"].unique().tolist()
-    )
+    fechas_disponibles = sorted(st.session_state.transacciones["Fecha_Pago"].unique().tolist())
     if not fechas_disponibles:
       st.info("No hay fechas de pago válidas.")
     else:
-      fecha_seleccionada = st.selectbox(
-          "Seleccionar Fecha de Cobro", fechas_disponibles
-      )
+      fecha_seleccionada = st.selectbox("Seleccionar Fecha de Cobro", fechas_disponibles)
 
-      df_filtrado_fecha = st.session_state.transacciones[
-          st.session_state.transacciones["Fecha_Pago"] == fecha_seleccionada
-      ]
+      df_filtrado_fecha = st.session_state.transacciones[st.session_state.transacciones["Fecha_Pago"] == fecha_seleccionada]
 
-      total_efectivo = df_filtrado_fecha[
-          df_filtrado_fecha["Metodo_Pago"] == "Efectivo"
-      ]["Monto_Abonado"].sum()
-      total_pago_movil = df_filtrado_fecha[
-          df_filtrado_fecha["Metodo_Pago"] == "Pago Móvil"
-      ]["Monto_Abonado"].sum()
-      total_binance = df_filtrado_fecha[
-          df_filtrado_fecha["Metodo_Pago"] == "Binance"
-      ]["Monto_Abonado"].sum()
+      total_efectivo = df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Efectivo"]["Monto_Abonado"].sum()
+      total_pago_movil = df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Pago Móvil"]["Monto_Abonado"].sum()
+      total_binance = df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Binance"]["Monto_Abonado"].sum()
       total_dia = total_efectivo + total_pago_movil + total_binance
 
       st.subheader(f"Resumen de Cobros para el día: {fecha_seleccionada}")
