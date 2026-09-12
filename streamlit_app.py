@@ -65,7 +65,10 @@ if "pagos" not in st.session_state:
     st.session_state.pagos["Monto_Pagado"] = 0.0
 
 if "transacciones" not in st.session_state:
-  st.session_state.transacciones = cargar_datos("transacciones", ["ID_Credito", "Cliente", "Monto_Abonado", "Metodo_Pago", "Fecha_Pago"])
+  df_t = cargar_datos("transacciones", ["ID_Credito", "Cliente", "Monto_Abonado", "Metodo_Pago", "Fecha_Pago", "Descripcion"])
+  if not df_t.empty and "Descripcion" not in df_t.columns:
+    df_t["Descripcion"] = ""
+  st.session_state.transacciones = df_t
 
 if "caja_diaria" not in st.session_state:
   st.session_state.caja_diaria = cargar_datos("caja_diaria", ["Fecha", "Saldo_Inicial", "Gastos_Dia", "Notas_Gastos"])
@@ -209,6 +212,7 @@ elif menu == "Panel de Cobros y Pagos":
       monto_abono = st.number_input("Monto del Abono / Pago recibido", min_value=0.01, step=1.0, format="%.2f")
       metodo = st.selectbox("Método de Pago", ["Pago Móvil", "Efectivo", "Binance"])
       fecha = st.date_input("Fecha del Pago")
+      descripcion_pago = st.text_input("Descripción / Nota del Pago (Opcional)", placeholder="Ej. Abono adelantado, pago parcial...")
 
       btn_abonar = st.form_submit_button("Aplicar Abono")
 
@@ -245,6 +249,7 @@ elif menu == "Panel de Cobros y Pagos":
               "Monto_Abonado": monto_abono,
               "Metodo_Pago": metodo,
               "Fecha_Pago": str(fecha),
+              "Descripcion": descripcion_pago if descripcion_pago else "N/A",
           }])
           st.session_state.transacciones = pd.concat([st.session_state.transacciones, nueva_transaccion], ignore_index=True)
 
@@ -303,7 +308,6 @@ elif menu == "Historial de Pagos del Día":
       st.markdown("---")
       st.subheader("⚙️ Cuadre de Caja (Efectivo)")
 
-      # Buscar si ya existe registro de caja para esta fecha
       df_caja = st.session_state.caja_diaria
       registro_existente = df_caja[df_caja["Fecha"] == fecha_seleccionada]
 
@@ -327,7 +331,6 @@ elif menu == "Historial de Pagos del Día":
         btn_guardar_caja = st.form_submit_button("Guardar Cuadre de Caja")
 
         if btn_guardar_caja:
-          # Actualizar o insertar en el dataframe de caja
           if not registro_existente.empty:
             idx_reg = registro_existente.index[0]
             st.session_state.caja_diaria.loc[idx_reg, "Saldo_Inicial"] = saldo_inicial
@@ -345,8 +348,6 @@ elif menu == "Historial de Pagos del Día":
           guardar_en_sheets()
           st.success("✅ ¡Cuadre de caja actualizado y guardado en Google Sheets!")
 
-      # Cálculo de con cuánto llega (Efectivo Final en Caja)
-      # Efectivo Final = Saldo Inicial + Efectivo Cobrado en el día - Gastos del día
       efectivo_final_caja = saldo_inicial + total_efectivo - gastos_dia
 
       st.markdown("### 💰 Resultado del Cuadre")
