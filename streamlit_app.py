@@ -47,7 +47,7 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
       df = pd.DataFrame(data)
       for col in columnas_por_defecto:
         if col not in df.columns:
-          df[col] = 0.0 if "Monto" in col or "Saldo" in col or "Gastos" in col or "Prestado" in col else ""
+          df[col] = 0.0 if "Monto" in col or "Saldo" in col or "Gastos" in col else ""
       return df
     except Exception:
       ws = sh.add_worksheet(title=worksheet_name, rows="1000", cols="20")
@@ -60,10 +60,12 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
 
 # Inicializar datos en la sesión y forzar tipos numéricos correctos
 if "creditos" not in st.session_state:
-  df_c = cargar_datos("creditos", ["ID", "Cliente", "Monto_Total", "Monto_Prestado", "Modalidad", "Plazo", "Cuota_Valor", "Metodo_Salida", "Fecha_Prestamo", "Estado"])
+  df_c = cargar_datos("creditos", ["ID", "Cliente", "Monto_Total", "Monto_Prestado", "Modalidad", "Plazo", "Cuota_Valor", "Metodo_Salida_1", "Monto_Salida_1", "Metodo_Salida_2", "Monto_Salida_2", "Fecha_Prestamo", "Estado"])
   if not df_c.empty:
     df_c["Monto_Total"] = pd.to_numeric(df_c["Monto_Total"], errors="coerce").fillna(0.0)
     df_c["Monto_Prestado"] = pd.to_numeric(df_c["Monto_Prestado"], errors="coerce").fillna(0.0)
+    df_c["Monto_Salida_1"] = pd.to_numeric(df_c["Monto_Salida_1"], errors="coerce").fillna(0.0)
+    df_c["Monto_Salida_2"] = pd.to_numeric(df_c["Monto_Salida_2"], errors="coerce").fillna(0.0)
     df_c["Cuota_Valor"] = pd.to_numeric(df_c["Cuota_Valor"], errors="coerce").fillna(0.0)
   st.session_state.creditos = df_c.to_dict("records") if not df_c.empty else []
 
@@ -96,8 +98,7 @@ def guardar_en_sheets():
     spreadsheet_url = st.secrets["connections"]["gsheets"]["spreadsheet"]
     sh = client.open_by_url(spreadsheet_url)
 
-    # Asegurar columnas actualizadas para créditos
-    cols_creditos = ["ID", "Cliente", "Monto_Total", "Monto_Prestado", "Modalidad", "Plazo", "Cuota_Valor", "Metodo_Salida", "Fecha_Prestamo", "Estado"]
+    cols_creditos = ["ID", "Cliente", "Monto_Total", "Monto_Prestado", "Modalidad", "Plazo", "Cuota_Valor", "Metodo_Salida_1", "Monto_Salida_1", "Metodo_Salida_2", "Monto_Salida_2", "Fecha_Prestamo", "Estado"]
     df_creditos_to_save = pd.DataFrame(st.session_state.creditos) if st.session_state.creditos else pd.DataFrame(columns=cols_creditos)
     for col in cols_creditos:
       if col not in df_creditos_to_save.columns:
@@ -153,16 +154,25 @@ if menu == "Registrar Nuevo Crédito":
     
     col_p1, col_p2 = st.columns(2)
     with col_p1:
-      monto_prestado = st.number_input("Monto Real Prestado (Capital que entregas)", min_value=0.0, step=10.0, format="%.2f")
+      monto_prestado = st.number_input("Monto Real Prestado Total (Capital que entregas)", min_value=0.0, step=10.0, format="%.2f")
     with col_p2:
       monto_total = st.number_input("Monto Total a Deber (con intereses)", min_value=0.0, step=10.0, format="%.2f")
 
-    col_m1, col_m2, col_m3 = st.columns(3)
+    st.markdown("### 🏦 ¿De dónde sale el dinero? (Puedes dividirlo en hasta 2 opciones)")
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s1:
+      metodo_salida_1 = st.selectbox("Origen 1", ["Efectivo", "Pago Móvil", "Binance"])
+    with col_s2:
+      monto_salida_1 = st.number_input("Monto de Origen 1", min_value=0.0, value=0.0, step=1.0, format="%.2f")
+    with col_s3:
+      metodo_salida_2 = st.selectbox("Origen 2 (Opcional)", ["Ninguno", "Efectivo", "Pago Móvil", "Binance"])
+    with col_s4:
+      monto_salida_2 = st.number_input("Monto de Origen 2", min_value=0.0, value=0.0, step=1.0, format="%.2f")
+
+    col_m1, col_m2 = st.columns(2)
     with col_m1:
-      metodo_salida = st.selectbox("¿De dónde salió el dinero?", ["Efectivo", "Pago Móvil", "Binance"])
-    with col_m2:
       modalidad = st.selectbox("Modalidad de Cobro", ["Diario", "Semanal"])
-    with col_m3:
+    with col_m2:
       fecha_prestamo = st.date_input("Fecha del Préstamo")
 
     if modalidad == "Diario":
@@ -173,7 +183,17 @@ if menu == "Registrar Nuevo Crédito":
     submit = st.form_submit_button("Crear Crédito")
 
     if submit:
-      if nombre_cliente and monto_total > 0 and monto_prestado > 0 and num_cuotas > 0:
+      # Validar que si elige origen 2 como "Ninguno", su monto sea 0, o ajustar montos
+      if metodo_salida_2 == "Ninguno":
+        monto_salida_2 = 0.0
+
+      suma_origenes = monto_salida_1 + monto_salida_2
+
+      if not nombre_cliente or monto_total <= 0 or monto_prestado <= 0 or num_cuotas <= 0:
+        st.error("Por favor completa todos los campos principales correctamente.")
+      elif abs(suma_origenes - monto_prestado) > 0.01:
+        st.error(f"⚠️ La suma de los montos de los orígenes (${suma_origenes:.2f}) debe ser igual al Monto Real Prestado (${monto_prestado:.2f}).")
+      else:
         id_credito = len(st.session_state.creditos) + 1
         monto_cuota = float(monto_total / num_cuotas)
 
@@ -185,7 +205,10 @@ if menu == "Registrar Nuevo Crédito":
             "Modalidad": modalidad,
             "Plazo": int(num_cuotas),
             "Cuota_Valor": monto_cuota,
-            "Metodo_Salida": metodo_salida,
+            "Metodo_Salida_1": metodo_salida_1,
+            "Monto_Salida_1": float(monto_salida_1),
+            "Metodo_Salida_2": metodo_salida_2 if metodo_salida_2 != "Ninguno" else "",
+            "Monto_Salida_2": float(monto_salida_2),
             "Fecha_Prestamo": str(fecha_prestamo),
             "Estado": "Activo",
         }
@@ -212,9 +235,7 @@ if menu == "Registrar Nuevo Crédito":
         st.session_state.pagos["Monto_Cuota"] = pd.to_numeric(st.session_state.pagos["Monto_Cuota"], errors="coerce").fillna(0.0)
 
         guardar_en_sheets()
-        st.success(f"✅ ¡Crédito #{id_credito} creado para {nombre_cliente} saliente de {metodo_salida}!")
-      else:
-        st.error("Por favor completa todos los campos correctamente.")
+        st.success(f"✅ ¡Crédito #{id_credito} creado para {nombre_cliente} correctamente!")
 
 # ---------------------------------------------------------
 # 2. PANEL DE COBROS Y PAGOS
@@ -331,7 +352,6 @@ elif menu == "Panel de Cobros y Pagos":
 elif menu == "Historial de Pagos del Día":
   st.header("📅 Historial de Pagos y Cuadre de Caja Diario")
 
-  # Recopilar fechas tanto de transacciones de pago como de préstamos creados
   fechas_transacciones = st.session_state.transacciones["Fecha_Pago"].unique().tolist() if not st.session_state.transacciones.empty else []
   fechas_prestamos = [c.get("Fecha_Prestamo") for c in st.session_state.creditos if c.get("Fecha_Prestamo")]
   fechas_caja = st.session_state.caja_diaria["Fecha"].unique().tolist() if not st.session_state.caja_diaria.empty else []
@@ -353,11 +373,28 @@ elif menu == "Historial de Pagos del Día":
     total_binance_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Binance"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
     total_cobrado_dia = total_efectivo_cobrado + total_pago_movil_cobrado + total_binance_cobrado
 
-    # 2. Préstamos otorgados en el día (dinero que salió)
+    # 2. Préstamos otorgados en el día (dinero que salió considerando las 2 opciones de salida)
     creditos_del_dia = [c for c in st.session_state.creditos if c.get("Fecha_Prestamo") == fecha_seleccionada]
-    prestado_efectivo = sum(float(c.get("Monto_Prestado", 0)) for c in creditos_del_dia if c.get("Metodo_Salida") == "Efectivo")
-    prestado_pago_movil = sum(float(c.get("Monto_Prestado", 0)) for c in creditos_del_dia if c.get("Metodo_Salida") == "Pago Móvil")
-    prestado_binance = sum(float(c.get("Monto_Prestado", 0)) for c in creditos_del_dia if c.get("Metodo_Salida") == "Binance")
+    
+    prestado_efectivo = 0.0
+    prestado_pago_movil = 0.0
+    prestado_binance = 0.0
+
+    for c in creditos_del_dia:
+      # Origen 1
+      m1 = float(c.get("Monto_Salida_1", 0))
+      s1 = c.get("Metodo_Salida_1", "")
+      if s1 == "Efectivo": prestado_efectivo += m1
+      elif s1 == "Pago Móvil": prestado_pago_movil += m1
+      elif s1 == "Binance": prestado_binance += m1
+
+      # Origen 2
+      m2 = float(c.get("Monto_Salida_2", 0))
+      s2 = c.get("Metodo_Salida_2", "")
+      if s2 == "Efectivo": prestado_efectivo += m2
+      elif s2 == "Pago Móvil": prestado_pago_movil += m2
+      elif s2 == "Binance": prestado_binance += m2
+
     total_prestado_dia = prestado_efectivo + prestado_pago_movil + prestado_binance
 
     st.subheader(f"📊 Resumen de Movimientos: {fecha_seleccionada}")
@@ -416,7 +453,7 @@ elif menu == "Historial de Pagos del Día":
         guardar_en_sheets()
         st.success("✅ ¡Cuadre de caja actualizado y guardado en Google Sheets!")
 
-    # Cálculos descontando tanto gastos operativos como los créditos prestados en efectivo / general
+    # Cálculos restando las salidas de las dos opciones de préstamos
     efectivo_final_caja = float(saldo_inicial) + total_efectivo_cobrado - float(gastos_dia) - prestado_efectivo
     total_general_dia = float(saldo_inicial) + total_cobrado_dia - float(gastos_dia) - total_prestado_dia
 
