@@ -210,7 +210,6 @@ elif menu == "Panel de Cobros y Pagos":
 
     credito_info = next(c for c in st.session_state.creditos if c['ID'] == id_activo)
 
-    # Forzar estrictamente los tipos numéricos antes de cualquier operación
     st.session_state.pagos["Monto_Pagado"] = pd.to_numeric(st.session_state.pagos["Monto_Pagado"], errors="coerce").fillna(0.0).astype(float)
     st.session_state.pagos["Monto_Cuota"] = pd.to_numeric(st.session_state.pagos["Monto_Cuota"], errors="coerce").fillna(0.0).astype(float)
 
@@ -238,7 +237,6 @@ elif menu == "Panel de Cobros y Pagos":
       btn_abonar = st.form_submit_button("Aplicar Abono")
 
       if btn_abonar:
-        # Asegurar tipos de nuevo por seguridad
         st.session_state.pagos["Monto_Pagado"] = st.session_state.pagos["Monto_Pagado"].astype(float)
         st.session_state.pagos["Monto_Cuota"] = st.session_state.pagos["Monto_Cuota"].astype(float)
 
@@ -336,7 +334,7 @@ elif menu == "Historial de Pagos del Día":
       col4.metric("📈 Total Cobrado", f"${total_cobrado_dia:.2f}")
 
       st.markdown("---")
-      st.subheader("⚙️ Cuadre de Caja (Efectivo)")
+      st.subheader("⚙️ Cuadre de Caja (Efectivo y General)")
 
       st.session_state.caja_diaria["Saldo_Inicial"] = pd.to_numeric(st.session_state.caja_diaria["Saldo_Inicial"], errors="coerce").fillna(0.0)
       st.session_state.caja_diaria["Gastos_Dia"] = pd.to_numeric(st.session_state.caja_diaria["Gastos_Dia"], errors="coerce").fillna(0.0)
@@ -384,14 +382,16 @@ elif menu == "Historial de Pagos del Día":
           guardar_en_sheets()
           st.success("✅ ¡Cuadre de caja actualizado y guardado en Google Sheets!")
 
+      # Cálculos para reflejar tanto la caja de efectivo como el acumulado total
       efectivo_final_caja = float(saldo_inicial) + total_efectivo - float(gastos_dia)
+      total_general_dia = float(saldo_inicial) + total_cobrado_dia - float(gastos_dia)
 
       st.markdown("### 💰 Resultado del Cuadre")
       c1, c2, c3, c4 = st.columns(4)
       c1.metric("Saldo Inicial", f"${saldo_inicial:.2f}")
-      c2.metric("Total Efectivo Cobrado", f"${total_efectivo:.2f}")
+      c2.metric("Total Cobrado (General)", f"${total_cobrado_dia:.2f}", delta=f"Efectivo: ${total_efectivo:.2f}")
       c3.metric("Gastos del Día", f"-${gastos_dia:.2f}")
-      c4.metric("Con Cuánto Llega (Caja Final)", f"\({efectivo_final_caja:.2f}", delta=f"\){(total_efectivo - gastos_dia):.2f} neto del día")
+      c4.metric("Total General en Caja/Bancos", f"${total_general_dia:.2f}", delta=f"Efectivo en mano: ${efectivo_final_caja:.2f}")
 
       st.markdown("---")
       st.subheader("Detalle de transacciones de la fecha")
