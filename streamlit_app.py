@@ -45,7 +45,6 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
       if not data:
         return pd.DataFrame(columns=columnas_por_defecto)
       df = pd.DataFrame(data)
-      # Asegurar que existan todas las columnas por defecto si la hoja está desactualizada
       for col in columnas_por_defecto:
         if col not in df.columns:
           df[col] = 0.0 if "Monto" in col or "Saldo" in col or "Gastos" in col else ""
@@ -186,6 +185,8 @@ if menu == "Registrar Nuevo Crédito":
         df_nuevos_pagos["Monto_Pagado"] = pd.to_numeric(df_nuevos_pagos["Monto_Pagado"], errors="coerce").fillna(0.0)
 
         st.session_state.pagos = pd.concat([st.session_state.pagos, df_nuevos_pagos], ignore_index=True)
+        st.session_state.pagos["Monto_Pagado"] = pd.to_numeric(st.session_state.pagos["Monto_Pagado"], errors="coerce").fillna(0.0)
+        st.session_state.pagos["Monto_Cuota"] = pd.to_numeric(st.session_state.pagos["Monto_Cuota"], errors="coerce").fillna(0.0)
 
         guardar_en_sheets()
         st.success(f"✅ ¡Crédito #{id_credito} creado y guardado en Google Sheets para {nombre_cliente}!")
@@ -209,9 +210,9 @@ elif menu == "Panel de Cobros y Pagos":
 
     credito_info = next(c for c in st.session_state.creditos if c['ID'] == id_activo)
 
-    # Asegurar tipos numéricos antes de filtrar y sumar
-    st.session_state.pagos["Monto_Pagado"] = pd.to_numeric(st.session_state.pagos["Monto_Pagado"], errors="coerce").fillna(0.0)
-    st.session_state.pagos["Monto_Cuota"] = pd.to_numeric(st.session_state.pagos["Monto_Cuota"], errors="coerce").fillna(0.0)
+    # Forzar estrictamente los tipos numéricos antes de cualquier operación
+    st.session_state.pagos["Monto_Pagado"] = pd.to_numeric(st.session_state.pagos["Monto_Pagado"], errors="coerce").fillna(0.0).astype(float)
+    st.session_state.pagos["Monto_Cuota"] = pd.to_numeric(st.session_state.pagos["Monto_Cuota"], errors="coerce").fillna(0.0).astype(float)
 
     df_pagos_credito = st.session_state.pagos[st.session_state.pagos["ID_Credito"] == id_activo]
     total_abonado = float(df_pagos_credito["Monto_Pagado"].sum())
@@ -237,6 +238,10 @@ elif menu == "Panel de Cobros y Pagos":
       btn_abonar = st.form_submit_button("Aplicar Abono")
 
       if btn_abonar:
+        # Asegurar tipos de nuevo por seguridad
+        st.session_state.pagos["Monto_Pagado"] = st.session_state.pagos["Monto_Pagado"].astype(float)
+        st.session_state.pagos["Monto_Cuota"] = st.session_state.pagos["Monto_Cuota"].astype(float)
+
         restante_por_aplicar = float(monto_abono)
         indices_cuotas = df_pagos_credito.index[df_pagos_credito["Estado"] != "Pagado"]
 
@@ -247,20 +252,21 @@ elif menu == "Panel de Cobros y Pagos":
             if restante_por_aplicar <= 0:
               break
 
-            cuota_actual = st.session_state.pagos.loc[idx]
-            deuda_cuota = float(cuota_actual["Monto_Cuota"]) - float(cuota_actual["Monto_Pagado"])
+            monto_cuota_val = float(st.session_state.pagos.at[idx, "Monto_Cuota"])
+            monto_pagado_val = float(st.session_state.pagos.at[idx, "Monto_Pagado"])
+            deuda_cuota = monto_cuota_val - monto_pagado_val
 
             if restante_por_aplicar >= deuda_cuota:
               restante_por_aplicar -= deuda_cuota
-              st.session_state.pagos.loc[idx, "Monto_Pagado"] = float(cuota_actual["Monto_Pagado"]) + deuda_cuota
-              st.session_state.pagos.loc[idx, "Estado"] = "Pagado"
-              st.session_state.pagos.loc[idx, "Metodo_Pago"] = metodo
-              st.session_state.pagos.loc[idx, "Fecha_Pago"] = str(fecha)
+              st.session_state.pagos.at[idx, "Monto_Pagado"] = monto_pagado_val + deuda_cuota
+              st.session_state.pagos.at[idx, "Estado"] = "Pagado"
+              st.session_state.pagos.at[idx, "Metodo_Pago"] = metodo
+              st.session_state.pagos.at[idx, "Fecha_Pago"] = str(fecha)
             else:
-              st.session_state.pagos.loc[idx, "Monto_Pagado"] = float(cuota_actual["Monto_Pagado"]) + restante_por_aplicar
-              st.session_state.pagos.loc[idx, "Estado"] = "Abonado"
-              st.session_state.pagos.loc[idx, "Metodo_Pago"] = metodo
-              st.session_state.pagos.loc[idx, "Fecha_Pago"] = str(fecha)
+              st.session_state.pagos.at[idx, "Monto_Pagado"] = monto_pagado_val + restante_por_aplicar
+              st.session_state.pagos.at[idx, "Estado"] = "Abonado"
+              st.session_state.pagos.at[idx, "Metodo_Pago"] = metodo
+              st.session_state.pagos.at[idx, "Fecha_Pago"] = str(fecha)
               restante_por_aplicar = 0.0
 
           nueva_transaccion = pd.DataFrame([{
@@ -274,6 +280,7 @@ elif menu == "Panel de Cobros y Pagos":
           nueva_transaccion["Monto_Abonado"] = pd.to_numeric(nueva_transaccion["Monto_Abonado"], errors="coerce").fillna(0.0)
           
           st.session_state.transacciones = pd.concat([st.session_state.transacciones, nueva_transaccion], ignore_index=True)
+          st.session_state.transacciones["Monto_Abonado"] = pd.to_numeric(st.session_state.transacciones["Monto_Abonado"], errors="coerce").fillna(0.0)
 
           guardar_en_sheets()
           st.success(f"✅ Abono de ${monto_abono:.2f} registrado y respaldado en Google Sheets.")
