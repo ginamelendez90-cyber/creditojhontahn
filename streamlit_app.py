@@ -275,7 +275,23 @@ elif menu == "Panel de Cobros y Pagos":
     st.subheader("📋 Estado de Cuotas")
     st.dataframe(df_pagos_credito, use_container_width=True)
 
-    st.markdown("### 💸 Registrar Pago o Abono Libre")
+    # NUEVO: Cuadro con la lista exacta de abonos realizados por el cliente
+    st.markdown("---")
+    st.subheader(f"📜 Historial de Abonos Recibidos ({credito_info['Cliente']})")
+    if not st.session_state.transacciones.empty:
+      df_trans_cliente = st.session_state.transacciones[st.session_state.transacciones["ID_Credito"] == id_activo]
+      if not df_trans_cliente.empty:
+        # Mostramos los campos limpios y ordenados (Monto, Método, Fecha, Nota)
+        df_mostrar_abonos = df_trans_cliente[["Fecha_Pago", "Monto_Abonado", "Metodo_Pago", "Descripcion"]].copy()
+        df_mostrar_abonos.columns = ["Fecha", "Monto Abonado", "Método de Pago", "Descripción / Nota"]
+        st.dataframe(df_mostrar_abonos.reset_index(drop=True), use_container_width=True)
+      else:
+        st.info("Aún no se han registrado abonos para este crédito.")
+    else:
+      st.info("Aún no hay transacciones registradas.")
+
+    st.markdown("---")
+    st.subheader("💸 Registrar Pago o Abono Libre")
     with st.form("form_registrar_abono", clear_on_submit=True):
       monto_abono = st.number_input("Monto del Abono / Pago recibido", min_value=0.01, step=1.0, format="%.2f")
       metodo = st.selectbox("Método de Pago", ["Pago Móvil", "Efectivo", "Binance"])
@@ -330,6 +346,7 @@ elif menu == "Panel de Cobros y Pagos":
 
           guardar_en_sheets()
           st.success(f"✅ Abono de ${monto_abono:.2f} registrado y respaldado en Google Sheets.")
+          st.rerun()
 
     st.markdown("---")
     st.subheader("🔒 Cerrar Crédito")
@@ -342,6 +359,7 @@ elif menu == "Panel de Cobros y Pagos":
             c['Estado'] = "Cerrado"
         guardar_en_sheets()
         st.success("🔒 El crédito se ha cerrado correctamente.")
+        st.rerun()
     else:
       if st.button("Forzar Cierre de Crédito"):
         for c in st.session_state.creditos:
@@ -349,6 +367,7 @@ elif menu == "Panel de Cobros y Pagos":
             c['Estado'] = "Cerrado"
         guardar_en_sheets()
         st.warning("⚠️ Crédito cerrado manualmente con deudas.")
+        st.rerun()
 
 # ---------------------------------------------------------
 # 3. HISTORIAL DE PAGOS DEL DÍA Y CUADRE DE CAJA
@@ -445,6 +464,7 @@ elif menu == "Historial de Pagos del Día":
 
         guardar_en_sheets()
         st.success("✅ ¡Saldo inicial guardado en Google Sheets!")
+        st.rerun()
 
     # Formulario para registrar un gasto nuevo del día
     st.markdown("### 💸 Registrar Gasto del Día")
