@@ -1,5 +1,6 @@
 import gspread
 from google.oauth2.service_account import Credentials
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -19,10 +20,10 @@ def conectar_gsheets():
     if "connections" not in st.secrets or "gsheets" not in st.secrets["connections"]:
       st.error("⚠️ No se encontró la sección [connections.gsheets] en st.secrets.")
       return None
-    
+
     creds_dict = dict(st.secrets["connections"]["gsheets"])
     creds_dict.pop("client_secret", None)
-    
+
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(creds)
     return client
@@ -92,10 +93,12 @@ if "gastos" not in st.session_state:
   df_g["Monto_Gasto"] = pd.to_numeric(df_g["Monto_Gasto"], errors="coerce").fillna(0.0)
   st.session_state.gastos = df_g
 
-# NUEVA TABLA: Reposiciones / Inyecciones de Fondos
+# TABLA REPOSICIONES CON COLUMNA Suma_A_Pago_Movil
 if "reposiciones" not in st.session_state:
-  df_r = cargar_datos("reposiciones", ["Fecha", "Monto", "Metodo_Destino", "Descripcion"])
+  df_r = cargar_datos("reposiciones", ["Fecha", "Monto", "Metodo_Destino", "Suma_A_Pago_Movil", "Descripcion"])
   df_r["Monto"] = pd.to_numeric(df_r["Monto"], errors="coerce").fillna(0.0)
+  if "Suma_A_Pago_Movil" not in df_r.columns:
+    df_r["Suma_A_Pago_Movil"] = "Sí"
   st.session_state.reposiciones = df_r
 
 
@@ -126,12 +129,14 @@ def guardar_en_sheets():
     for name, df in dic_datos.items():
       try:
         ws = sh.worksheet(name)
-      except:
-        ws = sh.add_worksheet(title=name, rows="1000", cols=20)
+      except Exception:
+        ws = sh.add_worksheet(title=name, rows="1000", cols="20")
 
       ws.clear()
       if not df.empty:
-        data_to_write = [df.columns.values.tolist()] + df.values.tolist()
+        # Limpieza de valores NaN para evitar error 'Out of range float values are not JSON compliant'
+        df_limpio = df.fillna("")
+        data_to_write = [df_limpio.columns.values.tolist()] + df_limpio.values.tolist()
         ws.update(data_to_write)
       else:
         ws.append_row(df.columns.tolist())
@@ -163,7 +168,7 @@ if menu == "Registrar Nuevo Crédito":
 
   with st.form("form_credito", clear_on_submit=True):
     nombre_cliente = st.text_input("Nombre del Cliente")
-    
+
     col_p1, col_p2 = st.columns(2)
     with col_p1:
       monto_prestado = st.number_input("Monto Real Prestado Total (Capital que entregas)", min_value=0.0, step=10.0, format="%.2f")
@@ -345,7 +350,7 @@ elif menu == "Panel de Cobros y Pagos":
               "Descripcion": descripcion_pago if descripcion_pago else "N/A",
           }])
           nueva_transaccion["Monto_Abonado"] = pd.to_numeric(nueva_transaccion["Monto_Abonado"], errors="coerce").fillna(0.0)
-          
+
           st.session_state.transacciones = pd.concat([st.session_state.transacciones, nueva_transaccion], ignore_index=True)
           st.session_state.transacciones["Monto_Abonado"] = pd.to_numeric(st.session_state.transacciones["Monto_Abonado"], errors="coerce").fillna(0.0)
 
@@ -387,7 +392,7 @@ elif menu == "Historial de Pagos del Día":
   fechas_reposiciones = st.session_state.reposiciones["Fecha"].unique().tolist() if not st.session_state.reposiciones.empty else []
 
   fechas_disponibles = sorted(list(set(fechas_transacciones + fechas_prestamos + fechas_gastos + fechas_caja + fechas_reposiciones)))
-  
+
   if not fechas_disponibles:
     st.info("No hay registros de pagos, gastos o préstamos todavía.")
   else:
@@ -405,7 +410,7 @@ elif menu == "Historial de Pagos del Día":
 
     # 2. Préstamos otorgados en el día
     creditos_del_dia = [c for c in st.session_state.creditos if c.get("Fecha_Prestamo") == fecha_seleccionada]
-    
+
     prestado_efectivo = 0.0
     prestado_pago_movil = 0.0
     prestado_binance = 0.0
@@ -433,33 +438,48 @@ elif menu == "Historial de Pagos del Día":
       gastos_del_dia = st.session_state.gastos[st.session_state.gastos["Fecha"] == fecha_seleccionada]
       total_gastos_dia = float(gastos_del_dia["Monto_Gasto"].sum()) if not gastos_del_dia.empty else 0.0
 
-    # 4. Reposiciones / Inyecciones del día (NUEVO)
+    # 4. Reposiciones / Inyecciones del día (Separando las que suman a Pago Móvil)
     reposiciones_del_dia = pd.DataFrame()
-    total_reposicion_pago_movil = 0.0
+    total_repo_pm_sumar = 0.0
+    total_repo_pm_no_sumar = 0.0
     total_reposicion_efectivo = 0.0
     total_reposicion_binance = 0.0
 
     if not st.session_state.reposiciones.empty and "Fecha" in st.session_state.reposiciones.columns:
       st.session_state.reposiciones["Monto"] = pd.to_numeric(st.session_state.reposiciones["Monto"], errors="coerce").fillna(0.0)
+      if "Suma_A_Pago_Movil" not in st.session_state.reposiciones.columns:
+        st.session_state.reposiciones["Suma_A_Pago_Movil"] = "Sí"
+
       reposiciones_del_dia = st.session_state.reposiciones[st.session_state.reposiciones["Fecha"] == fecha_seleccionada]
-      
+
       if not reposiciones_del_dia.empty:
-        total_reposicion_pago_movil = float(reposiciones_del_dia[reposiciones_del_dia["Metodo_Destino"] == "Pago Móvil"]["Monto"].sum())
+        # Reposiciones Pago Móvil que SÍ suman
+        repo_pm_si = reposiciones_del_dia[(reposiciones_del_dia["Metodo_Destino"] == "Pago Móvil") & (reposiciones_del_dia["Suma_A_Pago_Movil"] == "Sí")]
+        total_repo_pm_sumar = float(repo_pm_si["Monto"].sum())
+
+        # Reposiciones Pago Móvil que NO suman
+        repo_pm_no = reposiciones_del_dia[(reposiciones_del_dia["Metodo_Destino"] == "Pago Móvil") & (reposiciones_del_dia["Suma_A_Pago_Movil"] == "No")]
+        total_repo_pm_no_sumar = float(repo_pm_no["Monto"].sum())
+
         total_reposicion_efectivo = float(reposiciones_del_dia[reposiciones_del_dia["Metodo_Destino"] == "Efectivo"]["Monto"].sum())
         total_reposicion_binance = float(reposiciones_del_dia[reposiciones_del_dia["Metodo_Destino"] == "Binance"]["Monto"].sum())
 
-    total_reposiciones_dia = total_reposicion_pago_movil + total_reposicion_efectivo + total_reposicion_binance
+    # Total reposiciones computables en el disponible
+    total_reposiciones_efectivas_dia = total_repo_pm_sumar + total_reposicion_efectivo + total_reposicion_binance
 
     st.subheader(f"📊 Resumen de Movimientos: {fecha_seleccionada}")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("💵 Efectivo Cobrado", f"${total_efectivo_cobrado:.2f}", delta=f"Prestado: -${prestado_efectivo:.2f}" if prestado_efectivo > 0 else None)
-    
-    # Pago Móvil reflejando reposiciones agregadas para créditos
-    pm_delta_str = f"Cobrado: ${total_pago_movil_cobrado:.2f} | Repo: +${total_reposicion_pago_movil:.2f} | Prestado: -${prestado_pago_movil:.2f}"
-    col2.metric("📱 Pago Móvil (Cobros + Reposiciones)", f"${(total_pago_movil_cobrado + total_reposicion_pago_movil):.2f}", delta=pm_delta_str)
-    
+
+    # Detalle en el delta de Pago Móvil según opción elegida
+    pm_delta_str = f"Cobrado: ${total_pago_movil_cobrado:.2f} | Repo Sumada: +${total_repo_pm_sumar:.2f}"
+    if total_repo_pm_no_sumar > 0:
+      pm_delta_str += f" | (Sin Sumar: ${total_repo_pm_no_sumar:.2f})"
+
+    col2.metric("📱 Pago Móvil Computable", f"${(total_pago_movil_cobrado + total_repo_pm_sumar):.2f}", delta=pm_delta_str)
+
     col3.metric("🪙 Binance", f"${total_binance_cobrado:.2f}", delta=f"Prestado: -${prestado_binance:.2f}" if prestado_binance > 0 else None)
-    col4.metric("📈 Total Cobrado + Reposiciones", f"${(total_cobrado_dia + total_reposiciones_dia):.2f}", delta=f"Total Prestado: -${total_prestado_dia:.2f}" if total_prestado_dia > 0 else None)
+    col4.metric("📈 Total Cobrado + Reposiciones Sumadas", f"${(total_cobrado_dia + total_reposiciones_efectivas_dia):.2f}", delta=f"Total Prestado: -${total_prestado_dia:.2f}" if total_prestado_dia > 0 else None)
 
     st.markdown("---")
     st.subheader("⚙️ Configuración de Caja del Día")
@@ -493,19 +513,21 @@ elif menu == "Historial de Pagos del Día":
         st.success("✅ ¡Saldo inicial guardado en Google Sheets!")
         st.rerun()
 
-    # Formulario para registrar Reposición / Inyección de Capital (NUEVO)
+    # FORMULARIO DE REPOSICIÓN CON OPCIÓN DE SUMAR A PAGO MÓVIL (NUEVO)
     st.markdown("---")
-    st.subheader("📲 Registrar Reposición / Recarga de Saldo (Pago Móvil u otros)")
-    st.caption("Usa este formulario cuando inyectes dinero a la cuenta de Pago Móvil u otro origen para poder otorgar préstamos.")
-    
+    st.subheader("📲 Registrar Reposición / Recarga de Saldo")
+    st.caption("Usa este formulario cuando inyectes dinero. Puedes elegir si esta reposición incrementa el disponible de Pago Móvil para prestar.")
+
     with st.form(f"form_registrar_reposicion_{fecha_seleccionada}", clear_on_submit=True):
-      col_r1, col_r2, col_r3 = st.columns(3)
+      col_r1, col_r2, col_r3, col_r4 = st.columns(4)
       with col_r1:
-        monto_reposicion = st.number_input("Monto de la Reposición / Recarga", min_value=0.01, step=1.0, format="%.2f")
+        monto_reposicion = st.number_input("Monto de la Reposición", min_value=0.01, step=1.0, format="%.2f")
       with col_r2:
         metodo_destino = st.selectbox("Cuenta Destino", ["Pago Móvil", "Efectivo", "Binance"], index=0)
       with col_r3:
-        desc_reposicion = st.text_input("Descripción / Origen del dinero", placeholder="Ej. Cambio de efectivo a saldo de Pago Móvil, Recarga personal...")
+        sumar_a_pm = st.selectbox("¿Sumar a disponibilidad de Pago Móvil?", ["Sí", "No"], index=0)
+      with col_r4:
+        desc_reposicion = st.text_input("Descripción / Origen del dinero", placeholder="Ej. Venta de $ efectivo, recarga personal...")
 
       btn_agregar_repo = st.form_submit_button("Registrar Reposición")
 
@@ -515,13 +537,14 @@ elif menu == "Historial de Pagos del Día":
               "Fecha": fecha_seleccionada,
               "Monto": float(monto_reposicion),
               "Metodo_Destino": metodo_destino,
+              "Suma_A_Pago_Movil": sumar_a_pm if metodo_destino == "Pago Móvil" else "N/A",
               "Descripcion": desc_reposicion if desc_reposicion else "Reposición de saldo"
           }])
           nueva_repo["Monto"] = pd.to_numeric(nueva_repo["Monto"], errors="coerce").fillna(0.0)
-          
+
           st.session_state.reposiciones = pd.concat([st.session_state.reposiciones, nueva_repo], ignore_index=True)
           guardar_en_sheets()
-          st.success(f"✅ Reposición de ${monto_reposicion:.2f} agregada a {metodo_destino} correctamente.")
+          st.success(f"✅ Reposición de ${monto_reposicion:.2f} registrada correctamente en {metodo_destino} (Sumar a Pago Móvil: {sumar_a_pm}).")
           st.rerun()
         else:
           st.error("Por favor ingresa un monto mayor a cero.")
@@ -535,7 +558,7 @@ elif menu == "Historial de Pagos del Día":
         monto_gasto = st.number_input("Monto del Gasto", min_value=0.01, step=1.0, format="%.2f")
       with col_g2:
         desc_gasto = st.text_input("Descripción del Gasto", placeholder="Ej. Almuerzo, pasaje, repuesto...")
-      
+
       btn_agregar_gasto = st.form_submit_button("Agregar Gasto")
 
       if btn_agregar_gasto:
@@ -546,7 +569,7 @@ elif menu == "Historial de Pagos del Día":
               "Descripcion": desc_gasto
           }])
           nuevo_gasto["Monto_Gasto"] = pd.to_numeric(nuevo_gasto["Monto_Gasto"], errors="coerce").fillna(0.0)
-          
+
           st.session_state.gastos = pd.concat([st.session_state.gastos, nuevo_gasto], ignore_index=True)
           guardar_en_sheets()
           st.success("✅ Gasto registrado correctamente.")
@@ -554,24 +577,24 @@ elif menu == "Historial de Pagos del Día":
         else:
           st.error("Por favor ingresa un monto y una descripción válida para el gasto.")
 
-    # Cálculos finales restando gastos y préstamos, pero sumando reposiciones
+    # Cálculos finales restando gastos y préstamos, pero considerando el flag "Sumar_A_Pago_Movil"
     efectivo_final_caja = float(saldo_inicial) + total_efectivo_cobrado + total_reposicion_efectivo - total_gastos_dia - prestado_efectivo
-    pago_movil_disponible = total_pago_movil_cobrado + total_reposicion_pago_movil - prestado_pago_movil
-    total_general_dia = float(saldo_inicial) + total_cobrado_dia + total_reposiciones_dia - total_gastos_dia - total_prestado_dia
+    pago_movil_disponible = total_pago_movil_cobrado + total_repo_pm_sumar - prestado_pago_movil
+    total_general_dia = float(saldo_inicial) + total_cobrado_dia + total_reposiciones_efectivas_dia - total_gastos_dia - total_prestado_dia
 
     st.markdown("---")
     st.markdown("### 💰 Resultado del Cuadre")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Saldo Inicial (Caja)", f"${saldo_inicial:.2f}")
-    c2.metric("Total Ingresado (Cobros + Reposiciones)", f"${(total_cobrado_dia + total_reposiciones_dia):.2f}", delta=f"Cobros: ${total_cobrado_dia:.2f} | Reposiciones: ${total_reposiciones_dia:.2f}")
+    c2.metric("Total Ingresado Computable", f"${(total_cobrado_dia + total_reposiciones_efectivas_dia):.2f}", delta=f"Cobros: ${total_cobrado_dia:.2f} | Repo Sumadas: ${total_reposiciones_efectivas_dia:.2f}")
     c3.metric("Salidas del Día", f"-${(total_gastos_dia + total_prestado_dia):.2f}", delta=f"Prestado hoy: ${total_prestado_dia:.2f} | Gastos: ${total_gastos_dia:.2f}")
     c4.metric("Total General Disponible", f"${total_general_dia:.2f}", delta=f"Pago Móvil neto: ${pago_movil_disponible:.2f} | Efectivo caja: ${efectivo_final_caja:.2f}")
 
     st.markdown("---")
     st.subheader("📲 Reposiciones / Inyecciones registradas en esta fecha")
     if not reposiciones_del_dia.empty:
-      df_repo_mostrar = reposiciones_del_dia[["Monto", "Metodo_Destino", "Descripcion"]].copy()
-      df_repo_mostrar.columns = ["Monto Inyectado", "Cuenta Destino", "Descripción / Origen"]
+      df_repo_mostrar = reposiciones_del_dia[["Monto", "Metodo_Destino", "Suma_A_Pago_Movil", "Descripcion"]].copy()
+      df_repo_mostrar.columns = ["Monto Inyectado", "Cuenta Destino", "¿Suma a Pago Móvil?", "Descripción / Origen"]
       st.dataframe(df_repo_mostrar.reset_index(drop=True), use_container_width=True)
     else:
       st.info("No hay reposiciones registradas para esta fecha.")
