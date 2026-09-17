@@ -1,3 +1,4 @@
+import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import numpy as np
@@ -68,17 +69,20 @@ if "creditos" not in st.session_state:
     df_c["Monto_Salida_1"] = pd.to_numeric(df_c["Monto_Salida_1"], errors="coerce").fillna(0.0)
     df_c["Monto_Salida_2"] = pd.to_numeric(df_c["Monto_Salida_2"], errors="coerce").fillna(0.0)
     df_c["Cuota_Valor"] = pd.to_numeric(df_c["Cuota_Valor"], errors="coerce").fillna(0.0)
+    df_c["Fecha_Prestamo"] = df_c["Fecha_Prestamo"].astype(str)
   st.session_state.creditos = df_c.to_dict("records") if not df_c.empty else []
 
 if "pagos" not in st.session_state:
   df_p = cargar_datos("pagos", ["ID_Credito", "Cuota_N", "Monto_Cuota", "Monto_Pagado", "Estado", "Metodo_Pago", "Fecha_Pago"])
   df_p["Monto_Cuota"] = pd.to_numeric(df_p["Monto_Cuota"], errors="coerce").fillna(0.0)
   df_p["Monto_Pagado"] = pd.to_numeric(df_p["Monto_Pagado"], errors="coerce").fillna(0.0)
+  df_p["Fecha_Pago"] = df_p["Fecha_Pago"].astype(str)
   st.session_state.pagos = df_p
 
 if "transacciones" not in st.session_state:
   df_t = cargar_datos("transacciones", ["ID_Credito", "Cliente", "Monto_Abonado", "Metodo_Pago", "Fecha_Pago", "Descripcion"])
   df_t["Monto_Abonado"] = pd.to_numeric(df_t["Monto_Abonado"], errors="coerce").fillna(0.0)
+  df_t["Fecha_Pago"] = df_t["Fecha_Pago"].astype(str)
   if "Descripcion" not in df_t.columns:
     df_t["Descripcion"] = ""
   st.session_state.transacciones = df_t
@@ -86,12 +90,15 @@ if "transacciones" not in st.session_state:
 if "caja_diaria" not in st.session_state:
   df_cd = cargar_datos("caja_diaria", ["Fecha", "Saldo_Inicial"])
   df_cd["Saldo_Inicial"] = pd.to_numeric(df_cd["Saldo_Inicial"], errors="coerce").fillna(0.0)
+  if "Fecha" in df_cd.columns:
+    df_cd["Fecha"] = df_cd["Fecha"].astype(str)
   st.session_state.caja_diaria = df_cd
 
-# TABLA GASTOS CON COLUMNA Metodo_Gasto
 if "gastos" not in st.session_state:
   df_g = cargar_datos("gastos", ["Fecha", "Monto_Gasto", "Metodo_Gasto", "Descripcion"])
   df_g["Monto_Gasto"] = pd.to_numeric(df_g["Monto_Gasto"], errors="coerce").fillna(0.0)
+  if "Fecha" in df_g.columns:
+    df_g["Fecha"] = df_g["Fecha"].astype(str)
   if "Metodo_Gasto" not in df_g.columns:
     df_g["Metodo_Gasto"] = "Efectivo"
   st.session_state.gastos = df_g
@@ -99,6 +106,8 @@ if "gastos" not in st.session_state:
 if "reposiciones" not in st.session_state:
   df_r = cargar_datos("reposiciones", ["Fecha", "Monto", "Metodo_Destino", "Suma_A_Pago_Movil", "Descripcion"])
   df_r["Monto"] = pd.to_numeric(df_r["Monto"], errors="coerce").fillna(0.0)
+  if "Fecha" in df_r.columns:
+    df_r["Fecha"] = df_r["Fecha"].astype(str)
   if "Suma_A_Pago_Movil" not in df_r.columns:
     df_r["Suma_A_Pago_Movil"] = "Sí"
   st.session_state.reposiciones = df_r
@@ -392,253 +401,254 @@ elif menu == "Historial de Pagos del Día":
   fechas_caja = st.session_state.caja_diaria["Fecha"].unique().tolist() if not st.session_state.caja_diaria.empty else []
   fechas_reposiciones = st.session_state.reposiciones["Fecha"].unique().tolist() if not st.session_state.reposiciones.empty else []
 
-  fechas_disponibles = sorted(list(set(fechas_transacciones + fechas_prestamos + fechas_gastos + fechas_caja + fechas_reposiciones)))
+  # INCLUSIÓN SIEMPRE DEL DÍA DE HOY
+  hoy_str = str(datetime.date.today())
+  fechas_disponibles = sorted(list(set(fechas_transacciones + fechas_prestamos + fechas_gastos + fechas_caja + fechas_reposiciones + [hoy_str])))
 
-  if not fechas_disponibles:
-    st.info("No hay registros de pagos, gastos o préstamos todavía.")
-  else:
-    fecha_seleccionada = st.selectbox("Seleccionar Fecha de Operación", fechas_disponibles)
+  # Seleccionar automáticamente el día de hoy por defecto
+  idx_defecto = fechas_disponibles.index(hoy_str) if hoy_str in fechas_disponibles else len(fechas_disponibles) - 1
+  fecha_seleccionada = st.selectbox("Seleccionar Fecha de Operación", fechas_disponibles, index=idx_defecto)
 
-    # 1. Cobros del día
-    df_filtrado_fecha = pd.DataFrame()
-    if not st.session_state.transacciones.empty and "Fecha_Pago" in st.session_state.transacciones.columns:
-      df_filtrado_fecha = st.session_state.transacciones[st.session_state.transacciones["Fecha_Pago"] == fecha_seleccionada]
+  # 1. Cobros del día
+  df_filtrado_fecha = pd.DataFrame()
+  if not st.session_state.transacciones.empty and "Fecha_Pago" in st.session_state.transacciones.columns:
+    df_filtrado_fecha = st.session_state.transacciones[st.session_state.transacciones["Fecha_Pago"] == fecha_seleccionada]
 
-    total_efectivo_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Efectivo"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
-    total_pago_movil_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Pago Móvil"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
-    total_binance_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Binance"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
-    total_cobrado_dia = total_efectivo_cobrado + total_pago_movil_cobrado + total_binance_cobrado
+  total_efectivo_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Efectivo"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
+  total_pago_movil_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Pago Móvil"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
+  total_binance_cobrado = float(df_filtrado_fecha[df_filtrado_fecha["Metodo_Pago"] == "Binance"]["Monto_Abonado"].sum()) if not df_filtrado_fecha.empty else 0.0
+  total_cobrado_dia = total_efectivo_cobrado + total_pago_movil_cobrado + total_binance_cobrado
 
-    # 2. Préstamos otorgados en el día
-    creditos_del_dia = [c for c in st.session_state.creditos if c.get("Fecha_Prestamo") == fecha_seleccionada]
+  # 2. Préstamos otorgados en el día
+  creditos_del_dia = [c for c in st.session_state.creditos if str(c.get("Fecha_Prestamo")) == fecha_seleccionada]
 
-    prestado_efectivo = 0.0
-    prestado_pago_movil = 0.0
-    prestado_binance = 0.0
+  prestado_efectivo = 0.0
+  prestado_pago_movil = 0.0
+  prestado_binance = 0.0
 
-    for c in creditos_del_dia:
-      m1 = float(c.get("Monto_Salida_1", 0))
-      s1 = c.get("Metodo_Salida_1", "")
-      if s1 == "Efectivo": prestado_efectivo += m1
-      elif s1 == "Pago Móvil": prestado_pago_movil += m1
-      elif s1 == "Binance": prestado_binance += m1
+  for c in creditos_del_dia:
+    m1 = float(c.get("Monto_Salida_1", 0))
+    s1 = c.get("Metodo_Salida_1", "")
+    if s1 == "Efectivo": prestado_efectivo += m1
+    elif s1 == "Pago Móvil": prestado_pago_movil += m1
+    elif s1 == "Binance": prestado_binance += m1
 
-      m2 = float(c.get("Monto_Salida_2", 0))
-      s2 = c.get("Metodo_Salida_2", "")
-      if s2 == "Efectivo": prestado_efectivo += m2
-      elif s2 == "Pago Móvil": prestado_pago_movil += m2
-      elif s2 == "Binance": prestado_binance += m2
+    m2 = float(c.get("Monto_Salida_2", 0))
+    s2 = c.get("Metodo_Salida_2", "")
+    if s2 == "Efectivo": prestado_efectivo += m2
+    elif s2 == "Pago Móvil": prestado_pago_movil += m2
+    elif s2 == "Binance": prestado_binance += m2
 
-    total_prestado_dia = prestado_efectivo + prestado_pago_movil + prestado_binance
+  total_prestado_dia = prestado_efectivo + prestado_pago_movil + prestado_binance
 
-    # 3. Gastos del día (Separados por Origen / Método de pago)
-    gastos_del_dia = pd.DataFrame()
-    total_gastos_dia = 0.0
-    gasto_efectivo = 0.0
-    gasto_pago_movil = 0.0
-    gasto_binance = 0.0
+  # 3. Gastos del día
+  gastos_del_dia = pd.DataFrame()
+  total_gastos_dia = 0.0
+  gasto_efectivo = 0.0
+  gasto_pago_movil = 0.0
+  gasto_binance = 0.0
 
-    if not st.session_state.gastos.empty and "Fecha" in st.session_state.gastos.columns:
-      st.session_state.gastos["Monto_Gasto"] = pd.to_numeric(st.session_state.gastos["Monto_Gasto"], errors="coerce").fillna(0.0)
-      if "Metodo_Gasto" not in st.session_state.gastos.columns:
-        st.session_state.gastos["Metodo_Gasto"] = "Efectivo"
+  if not st.session_state.gastos.empty and "Fecha" in st.session_state.gastos.columns:
+    st.session_state.gastos["Monto_Gasto"] = pd.to_numeric(st.session_state.gastos["Monto_Gasto"], errors="coerce").fillna(0.0)
+    if "Metodo_Gasto" not in st.session_state.gastos.columns:
+      st.session_state.gastos["Metodo_Gasto"] = "Efectivo"
 
-      gastos_del_dia = st.session_state.gastos[st.session_state.gastos["Fecha"] == fecha_seleccionada]
+    gastos_del_dia = st.session_state.gastos[st.session_state.gastos["Fecha"] == fecha_seleccionada]
 
-      if not gastos_del_dia.empty:
-        total_gastos_dia = float(gastos_del_dia["Monto_Gasto"].sum())
-        gasto_efectivo = float(gastos_del_dia[gastos_del_dia["Metodo_Gasto"] == "Efectivo"]["Monto_Gasto"].sum())
-        gasto_pago_movil = float(gastos_del_dia[gastos_del_dia["Metodo_Gasto"] == "Pago Móvil"]["Monto_Gasto"].sum())
-        gasto_binance = float(gastos_del_dia[gastos_del_dia["Metodo_Gasto"] == "Binance"]["Monto_Gasto"].sum())
-
-    # 4. Reposiciones / Inyecciones del día
-    reposiciones_del_dia = pd.DataFrame()
-    total_repo_pm_sumar = 0.0
-    total_repo_pm_no_sumar = 0.0
-    total_reposicion_efectivo = 0.0
-    total_reposicion_binance = 0.0
-
-    if not st.session_state.reposiciones.empty and "Fecha" in st.session_state.reposiciones.columns:
-      st.session_state.reposiciones["Monto"] = pd.to_numeric(st.session_state.reposiciones["Monto"], errors="coerce").fillna(0.0)
-      if "Suma_A_Pago_Movil" not in st.session_state.reposiciones.columns:
-        st.session_state.reposiciones["Suma_A_Pago_Movil"] = "Sí"
-
-      reposiciones_del_dia = st.session_state.reposiciones[st.session_state.reposiciones["Fecha"] == fecha_seleccionada]
-
-      if not reposiciones_del_dia.empty:
-        repo_pm_si = reposiciones_del_dia[(reposiciones_del_dia["Metodo_Destino"] == "Pago Móvil") & (reposiciones_del_dia["Suma_A_Pago_Movil"] == "Sí")]
-        total_repo_pm_sumar = float(repo_pm_si["Monto"].sum())
-
-        repo_pm_no = reposiciones_del_dia[(reposiciones_del_dia["Metodo_Destino"] == "Pago Móvil") & (reposiciones_del_dia["Suma_A_Pago_Movil"] == "No")]
-        total_repo_pm_no_sumar = float(repo_pm_no["Monto"].sum())
-
-        total_reposicion_efectivo = float(reposiciones_del_dia[reposiciones_del_dia["Metodo_Destino"] == "Efectivo"]["Monto"].sum())
-        total_reposicion_binance = float(reposiciones_del_dia[reposiciones_del_dia["Metodo_Destino"] == "Binance"]["Monto"].sum())
-
-    total_reposiciones_efectivas_dia = total_repo_pm_sumar + total_reposicion_efectivo + total_reposicion_binance
-
-    st.subheader(f"📊 Resumen de Movimientos: {fecha_seleccionada}")
-    col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric(
-        "💵 Efectivo Cobrado",
-        f"${total_efectivo_cobrado:.2f}",
-        delta=f"Gastos: -${gasto_efectivo:.2f} | Prestado: -${prestado_efectivo:.2f}",
-    )
-
-    pm_delta_str = f"Cobrado: ${total_pago_movil_cobrado:.2f} | Repo: +${total_repo_pm_sumar:.2f} | Gastos: -${gasto_pago_movil:.2f}"
-    if total_repo_pm_no_sumar > 0:
-      pm_delta_str += f" | (Sin Sumar: ${total_repo_pm_no_sumar:.2f})"
-
-    col2.metric("📱 Pago Móvil Computable", f"${(total_pago_movil_cobrado + total_repo_pm_sumar):.2f}", delta=pm_delta_str)
-
-    col3.metric("🪙 Binance", f"${total_binance_cobrado:.2f}", delta=f"Gastos: -${gasto_binance:.2f} | Prestado: -${prestado_binance:.2f}")
-
-    col4.metric(
-        "📈 Total Cobrado + Reposiciones Sumadas",
-        f"${(total_cobrado_dia + total_reposiciones_efectivas_dia):.2f}",
-        delta=f"Total Salidas (Prestado + Gastos): -${(total_prestado_dia + total_gastos_dia):.2f}",
-    )
-
-    st.markdown("---")
-    st.subheader("⚙️ Configuración de Caja del Día")
-
-    st.session_state.caja_diaria["Saldo_Inicial"] = pd.to_numeric(st.session_state.caja_diaria["Saldo_Inicial"], errors="coerce").fillna(0.0)
-    df_caja = st.session_state.caja_diaria
-    registro_existente = df_caja[df_caja["Fecha"] == fecha_seleccionada]
-
-    default_saldo_inicial = 0.0
-    if not registro_existente.empty:
-      default_saldo_inicial = float(registro_existente.iloc[0]["Saldo_Inicial"])
-
-    with st.form(f"form_caja_{fecha_seleccionada}"):
-      saldo_inicial = st.number_input("¿Con cuánto saldo/efectivo sales hoy?", min_value=0.0, value=default_saldo_inicial, step=1.0, format="%.2f")
-      btn_guardar_caja = st.form_submit_button("Guardar Saldo Inicial")
-
-      if btn_guardar_caja:
-        if not registro_existente.empty:
-          idx_reg = registro_existente.index[0]
-          st.session_state.caja_diaria.loc[idx_reg, "Saldo_Inicial"] = float(saldo_inicial)
-        else:
-          nuevo_registro_caja = pd.DataFrame([{
-              "Fecha": fecha_seleccionada,
-              "Saldo_Inicial": float(saldo_inicial),
-          }])
-          nuevo_registro_caja["Saldo_Inicial"] = pd.to_numeric(nuevo_registro_caja["Saldo_Inicial"], errors="coerce").fillna(0.0)
-          st.session_state.caja_diaria = pd.concat([st.session_state.caja_diaria, nuevo_registro_caja], ignore_index=True)
-
-        guardar_en_sheets()
-        st.success("✅ ¡Saldo inicial guardado en Google Sheets!")
-        st.rerun()
-
-    # FORMULARIO DE REPOSICIÓN
-    st.markdown("---")
-    st.subheader("📲 Registrar Reposición / Recarga de Saldo")
-    st.caption("Usa este formulario cuando inyectes dinero. Puedes elegir si esta reposición incrementa el disponible de Pago Móvil para prestar.")
-
-    with st.form(f"form_registrar_reposicion_{fecha_seleccionada}", clear_on_submit=True):
-      col_r1, col_r2, col_r3, col_r4 = st.columns(4)
-      with col_r1:
-        monto_reposicion = st.number_input("Monto de la Reposición", min_value=0.01, step=1.0, format="%.2f")
-      with col_r2:
-        metodo_destino = st.selectbox("Cuenta Destino", ["Pago Móvil", "Efectivo", "Binance"], index=0)
-      with col_r3:
-        sumar_a_pm = st.selectbox("¿Sumar a disponibilidad de Pago Móvil?", ["Sí", "No"], index=0)
-      with col_r4:
-        desc_reposicion = st.text_input("Descripción / Origen del dinero", placeholder="Ej. Venta de $ efectivo, recarga personal...")
-
-      btn_agregar_repo = st.form_submit_button("Registrar Reposición")
-
-      if btn_agregar_repo:
-        if monto_reposicion > 0:
-          nueva_repo = pd.DataFrame([{
-              "Fecha": fecha_seleccionada,
-              "Monto": float(monto_reposicion),
-              "Metodo_Destino": metodo_destino,
-              "Suma_A_Pago_Movil": sumar_a_pm if metodo_destino == "Pago Móvil" else "N/A",
-              "Descripcion": desc_reposicion if desc_reposicion else "Reposición de saldo"
-          }])
-          nueva_repo["Monto"] = pd.to_numeric(nueva_repo["Monto"], errors="coerce").fillna(0.0)
-
-          st.session_state.reposiciones = pd.concat([st.session_state.reposiciones, nueva_repo], ignore_index=True)
-          guardar_en_sheets()
-          st.success(f"✅ Reposición de ${monto_reposicion:.2f} registrada correctamente en {metodo_destino} (Sumar a Pago Móvil: {sumar_a_pm}).")
-          st.rerun()
-        else:
-          st.error("Por favor ingresa un monto mayor a cero.")
-
-    # FORMULARIO PARA REGISTRAR UN GASTO NUEVO DEL DÍA CON SELECCIÓN DE ORIGEN (NUEVO)
-    st.markdown("---")
-    st.subheader("💸 Registrar Gasto del Día")
-    with st.form(f"form_registrar_gasto_{fecha_seleccionada}", clear_on_submit=True):
-      col_g1, col_g2, col_g3 = st.columns(3)
-      with col_g1:
-        monto_gasto = st.number_input("Monto del Gasto", min_value=0.01, step=1.0, format="%.2f")
-      with col_g2:
-        metodo_gasto = st.selectbox("¿De dónde sale el dinero?", ["Efectivo", "Pago Móvil", "Binance"], index=0)
-      with col_g3:
-        desc_gasto = st.text_input("Descripción del Gasto", placeholder="Ej. Almuerzo, pasaje, repuesto...")
-
-      btn_agregar_gasto = st.form_submit_button("Agregar Gasto")
-
-      if btn_agregar_gasto:
-        if desc_gasto and monto_gasto > 0:
-          nuevo_gasto = pd.DataFrame([{
-              "Fecha": fecha_seleccionada,
-              "Monto_Gasto": float(monto_gasto),
-              "Metodo_Gasto": metodo_gasto,
-              "Descripcion": desc_gasto
-          }])
-          nuevo_gasto["Monto_Gasto"] = pd.to_numeric(nuevo_gasto["Monto_Gasto"], errors="coerce").fillna(0.0)
-
-          st.session_state.gastos = pd.concat([st.session_state.gastos, nuevo_gasto], ignore_index=True)
-          guardar_en_sheets()
-          st.success(f"✅ Gasto de ${monto_gasto:.2f} registrado en {metodo_gasto}.")
-          st.rerun()
-        else:
-          st.error("Por favor ingresa un monto y una descripción válida para el gasto.")
-
-    # CÁLCULOS FINALES CONSIDERANDO EL ORIGEN DE CADA GASTO
-    efectivo_final_caja = float(saldo_inicial) + total_efectivo_cobrado + total_reposicion_efectivo - gasto_efectivo - prestado_efectivo
-    pago_movil_disponible = total_pago_movil_cobrado + total_repo_pm_sumar - gasto_pago_movil - prestado_pago_movil
-    total_general_dia = float(saldo_inicial) + total_cobrado_dia + total_reposiciones_efectivas_dia - total_gastos_dia - total_prestado_dia
-
-    st.markdown("---")
-    st.markdown("### 💰 Resultado del Cuadre")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Saldo Inicial (Caja)", f"${saldo_inicial:.2f}")
-    c2.metric("Total Ingresado Computable", f"${(total_cobrado_dia + total_reposiciones_efectivas_dia):.2f}", delta=f"Cobros: ${total_cobrado_dia:.2f} | Repo Sumadas: ${total_reposiciones_efectivas_dia:.2f}")
-    c3.metric("Salidas del Día", f"-${(total_gastos_dia + total_prestado_dia):.2f}", delta=f"Prestado hoy: ${total_prestado_dia:.2f} | Gastos: ${total_gastos_dia:.2f}")
-    c4.metric("Total General Disponible", f"${total_general_dia:.2f}", delta=f"Pago Móvil neto: ${pago_movil_disponible:.2f} | Efectivo caja: ${efectivo_final_caja:.2f}")
-
-    st.markdown("---")
-    st.subheader("📲 Reposiciones / Inyecciones registradas en esta fecha")
-    if not reposiciones_del_dia.empty:
-      df_repo_mostrar = reposiciones_del_dia[["Monto", "Metodo_Destino", "Suma_A_Pago_Movil", "Descripcion"]].copy()
-      df_repo_mostrar.columns = ["Monto Inyectado", "Cuenta Destino", "¿Suma a Pago Móvil?", "Descripción / Origen"]
-      st.dataframe(df_repo_mostrar.reset_index(drop=True), use_container_width=True)
-    else:
-      st.info("No hay reposiciones registradas para esta fecha.")
-
-    st.subheader("💸 Gastos registrados en esta fecha")
     if not gastos_del_dia.empty:
-      df_gastos_mostrar = gastos_del_dia[["Monto_Gasto", "Metodo_Gasto", "Descripcion"]].copy()
-      df_gastos_mostrar.columns = ["Monto Gasto", "Origen / Método", "Descripción"]
-      st.dataframe(df_gastos_mostrar.reset_index(drop=True), use_container_width=True)
-    else:
-      st.info("No hay gastos registrados para esta fecha.")
+      total_gastos_dia = float(gastos_del_dia["Monto_Gasto"].sum())
+      gasto_efectivo = float(gastos_del_dia[gastos_del_dia["Metodo_Gasto"] == "Efectivo"]["Monto_Gasto"].sum())
+      gasto_pago_movil = float(gastos_del_dia[gastos_del_dia["Metodo_Gasto"] == "Pago Móvil"]["Monto_Gasto"].sum())
+      gasto_binance = float(gastos_del_dia[gastos_del_dia["Metodo_Gasto"] == "Binance"]["Monto_Gasto"].sum())
 
-    st.subheader("📋 Créditos otorgados en esta fecha")
-    if creditos_del_dia:
-      st.dataframe(pd.DataFrame(creditos_del_dia), use_container_width=True)
-    else:
-      st.info("No se otorgaron créditos en esta fecha específica.")
+  # 4. Reposiciones / Inyecciones del día
+  reposiciones_del_dia = pd.DataFrame()
+  total_repo_pm_sumar = 0.0
+  total_repo_pm_no_sumar = 0.0
+  total_reposicion_efectivo = 0.0
+  total_reposicion_binance = 0.0
 
-    st.subheader("💳 Detalle de pagos/abonos recibidos en la fecha")
-    if not df_filtrado_fecha.empty:
-      st.dataframe(df_filtrado_fecha, use_container_width=True)
-    else:
-      st.info("No hay transacciones de cobro registradas para esta fecha.")
+  if not st.session_state.reposiciones.empty and "Fecha" in st.session_state.reposiciones.columns:
+    st.session_state.reposiciones["Monto"] = pd.to_numeric(st.session_state.reposiciones["Monto"], errors="coerce").fillna(0.0)
+    if "Suma_A_Pago_Movil" not in st.session_state.reposiciones.columns:
+      st.session_state.reposiciones["Suma_A_Pago_Movil"] = "Sí"
+
+    reposiciones_del_dia = st.session_state.reposiciones[st.session_state.reposiciones["Fecha"] == fecha_seleccionada]
+
+    if not reposiciones_del_dia.empty:
+      repo_pm_si = reposiciones_del_dia[(reposiciones_del_dia["Metodo_Destino"] == "Pago Móvil") & (reposiciones_del_dia["Suma_A_Pago_Movil"] == "Sí")]
+      total_repo_pm_sumar = float(repo_pm_si["Monto"].sum())
+
+      repo_pm_no = reposiciones_del_dia[(reposiciones_del_dia["Metodo_Destino"] == "Pago Móvil") & (reposiciones_del_dia["Suma_A_Pago_Movil"] == "No")]
+      total_repo_pm_no_sumar = float(repo_pm_no["Monto"].sum())
+
+      total_reposicion_efectivo = float(reposiciones_del_dia[reposiciones_del_dia["Metodo_Destino"] == "Efectivo"]["Monto"].sum())
+      total_reposicion_binance = float(reposiciones_del_dia[reposiciones_del_dia["Metodo_Destino"] == "Binance"]["Monto"].sum())
+
+  total_reposiciones_efectivas_dia = total_repo_pm_sumar + total_reposicion_efectivo + total_reposicion_binance
+
+  st.subheader(f"📊 Resumen de Movimientos: {fecha_seleccionada}")
+  col1, col2, col3, col4 = st.columns(4)
+
+  col1.metric(
+      "💵 Efectivo Cobrado",
+      f"${total_efectivo_cobrado:.2f}",
+      delta=f"Gastos: -${gasto_efectivo:.2f} | Prestado: -${prestado_efectivo:.2f}",
+  )
+
+  pm_delta_str = f"Cobrado: ${total_pago_movil_cobrado:.2f} | Repo: +${total_repo_pm_sumar:.2f} | Gastos: -${gasto_pago_movil:.2f}"
+  if total_repo_pm_no_sumar > 0:
+    pm_delta_str += f" | (Sin Sumar: ${total_repo_pm_no_sumar:.2f})"
+
+  col2.metric("📱 Pago Móvil Computable", f"${(total_pago_movil_cobrado + total_repo_pm_sumar):.2f}", delta=pm_delta_str)
+
+  col3.metric("🪙 Binance", f"${total_binance_cobrado:.2f}", delta=f"Gastos: -${gasto_binance:.2f} | Prestado: -${prestado_binance:.2f}")
+
+  col4.metric(
+      "📈 Total Cobrado + Reposiciones Sumadas",
+      f"${(total_cobrado_dia + total_reposiciones_efectivas_dia):.2f}",
+      delta=f"Total Salidas (Prestado + Gastos): -${(total_prestado_dia + total_gastos_dia):.2f}",
+  )
+
+  st.markdown("---")
+  st.subheader("⚙️ Configuración de Caja del Día")
+
+  st.session_state.caja_diaria["Saldo_Inicial"] = pd.to_numeric(st.session_state.caja_diaria["Saldo_Inicial"], errors="coerce").fillna(0.0)
+  df_caja = st.session_state.caja_diaria
+  registro_existente = df_caja[df_caja["Fecha"] == fecha_seleccionada]
+
+  default_saldo_inicial = 0.0
+  if not registro_existente.empty:
+    default_saldo_inicial = float(registro_existente.iloc[0]["Saldo_Inicial"])
+
+  with st.form(f"form_caja_{fecha_seleccionada}"):
+    saldo_inicial = st.number_input("¿Con cuánto saldo/efectivo sales hoy?", min_value=0.0, value=default_saldo_inicial, step=1.0, format="%.2f")
+    btn_guardar_caja = st.form_submit_button("Guardar Saldo Inicial")
+
+    if btn_guardar_caja:
+      if not registro_existente.empty:
+        idx_reg = registro_existente.index[0]
+        st.session_state.caja_diaria.loc[idx_reg, "Saldo_Inicial"] = float(saldo_inicial)
+      else:
+        nuevo_registro_caja = pd.DataFrame([{
+            "Fecha": fecha_seleccionada,
+            "Saldo_Inicial": float(saldo_inicial),
+        }])
+        nuevo_registro_caja["Saldo_Inicial"] = pd.to_numeric(nuevo_registro_caja["Saldo_Inicial"], errors="coerce").fillna(0.0)
+        st.session_state.caja_diaria = pd.concat([st.session_state.caja_diaria, nuevo_registro_caja], ignore_index=True)
+
+      guardar_en_sheets()
+      st.success(f"✅ ¡Saldo inicial guardado para {fecha_seleccionada}!")
+      st.rerun()
+
+  # FORMULARIO DE REPOSICIÓN
+  st.markdown("---")
+  st.subheader("📲 Registrar Reposición / Recarga de Saldo")
+  st.caption("Usa este formulario cuando inyectes dinero. Puedes elegir si esta reposición incrementa el disponible de Pago Móvil para prestar.")
+
+  with st.form(f"form_registrar_reposicion_{fecha_seleccionada}", clear_on_submit=True):
+    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+    with col_r1:
+      monto_reposicion = st.number_input("Monto de la Reposición", min_value=0.01, step=1.0, format="%.2f")
+    with col_r2:
+      metodo_destino = st.selectbox("Cuenta Destino", ["Pago Móvil", "Efectivo", "Binance"], index=0)
+    with col_r3:
+      sumar_a_pm = st.selectbox("¿Sumar a disponibilidad de Pago Móvil?", ["Sí", "No"], index=0)
+    with col_r4:
+      desc_reposicion = st.text_input("Descripción / Origen del dinero", placeholder="Ej. Venta de $ efectivo, recarga personal...")
+
+    btn_agregar_repo = st.form_submit_button("Registrar Reposición")
+
+    if btn_agregar_repo:
+      if monto_reposicion > 0:
+        nueva_repo = pd.DataFrame([{
+            "Fecha": fecha_seleccionada,
+            "Monto": float(monto_reposicion),
+            "Metodo_Destino": metodo_destino,
+            "Suma_A_Pago_Movil": sumar_a_pm if metodo_destino == "Pago Móvil" else "N/A",
+            "Descripcion": desc_reposicion if desc_reposicion else "Reposición de saldo"
+        }])
+        nueva_repo["Monto"] = pd.to_numeric(nueva_repo["Monto"], errors="coerce").fillna(0.0)
+
+        st.session_state.reposiciones = pd.concat([st.session_state.reposiciones, nueva_repo], ignore_index=True)
+        guardar_en_sheets()
+        st.success(f"✅ Reposición de ${monto_reposicion:.2f} registrada correctamente en {metodo_destino}.")
+        st.rerun()
+      else:
+        st.error("Por favor ingresa un monto mayor a cero.")
+
+  # FORMULARIO DE GASTOS
+  st.markdown("---")
+  st.subheader("💸 Registrar Gasto del Día")
+  with st.form(f"form_registrar_gasto_{fecha_seleccionada}", clear_on_submit=True):
+    col_g1, col_g2, col_g3 = st.columns(3)
+    with col_g1:
+      monto_gasto = st.number_input("Monto del Gasto", min_value=0.01, step=1.0, format="%.2f")
+    with col_g2:
+      metodo_gasto = st.selectbox("¿De dónde sale el dinero?", ["Efectivo", "Pago Móvil", "Binance"], index=0)
+    with col_g3:
+      desc_gasto = st.text_input("Descripción del Gasto", placeholder="Ej. Almuerzo, pasaje, repuesto...")
+
+    btn_agregar_gasto = st.form_submit_button("Agregar Gasto")
+
+    if btn_agregar_gasto:
+      if desc_gasto and monto_gasto > 0:
+        nuevo_gasto = pd.DataFrame([{
+            "Fecha": fecha_seleccionada,
+            "Monto_Gasto": float(monto_gasto),
+            "Metodo_Gasto": metodo_gasto,
+            "Descripcion": desc_gasto
+        }])
+        nuevo_gasto["Monto_Gasto"] = pd.to_numeric(nuevo_gasto["Monto_Gasto"], errors="coerce").fillna(0.0)
+
+        st.session_state.gastos = pd.concat([st.session_state.gastos, nuevo_gasto], ignore_index=True)
+        guardar_en_sheets()
+        st.success(f"✅ Gasto de ${monto_gasto:.2f} registrado en {metodo_gasto}.")
+        st.rerun()
+      else:
+        st.error("Por favor ingresa un monto y una descripción válida para el gasto.")
+
+  # CÁLCULOS FINALES
+  efectivo_final_caja = float(saldo_inicial) + total_efectivo_cobrado + total_reposicion_efectivo - gasto_efectivo - prestado_efectivo
+  pago_movil_disponible = total_pago_movil_cobrado + total_repo_pm_sumar - gasto_pago_movil - prestado_pago_movil
+  total_general_dia = float(saldo_inicial) + total_cobrado_dia + total_reposiciones_efectivas_dia - total_gastos_dia - total_prestado_dia
+
+  st.markdown("---")
+  st.markdown("### 💰 Resultado del Cuadre")
+  c1, c2, c3, c4 = st.columns(4)
+  c1.metric("Saldo Inicial (Caja)", f"${saldo_inicial:.2f}")
+  c2.metric("Total Ingresado Computable", f"${(total_cobrado_dia + total_reposiciones_efectivas_dia):.2f}", delta=f"Cobros: ${total_cobrado_dia:.2f} | Repo Sumadas: ${total_reposiciones_efectivas_dia:.2f}")
+  c3.metric("Salidas del Día", f"-${(total_gastos_dia + total_prestado_dia):.2f}", delta=f"Prestado hoy: ${total_prestado_dia:.2f} | Gastos: ${total_gastos_dia:.2f}")
+  c4.metric("Total General Disponible", f"${total_general_dia:.2f}", delta=f"Pago Móvil neto: ${pago_movil_disponible:.2f} | Efectivo caja: ${efectivo_final_caja:.2f}")
+
+  st.markdown("---")
+  st.subheader("📲 Reposiciones / Inyecciones registradas en esta fecha")
+  if not reposiciones_del_dia.empty:
+    df_repo_mostrar = reposiciones_del_dia[["Monto", "Metodo_Destino", "Suma_A_Pago_Movil", "Descripcion"]].copy()
+    df_repo_mostrar.columns = ["Monto Inyectado", "Cuenta Destino", "¿Suma a Pago Móvil?", "Descripción / Origen"]
+    st.dataframe(df_repo_mostrar.reset_index(drop=True), use_container_width=True)
+  else:
+    st.info("No hay reposiciones registradas para esta fecha.")
+
+  st.subheader("💸 Gastos registrados en esta fecha")
+  if not gastos_del_dia.empty:
+    df_gastos_mostrar = gastos_del_dia[["Monto_Gasto", "Metodo_Gasto", "Descripcion"]].copy()
+    df_gastos_mostrar.columns = ["Monto Gasto", "Origen / Método", "Descripción"]
+    st.dataframe(df_gastos_mostrar.reset_index(drop=True), use_container_width=True)
+  else:
+    st.info("No hay gastos registrados para esta fecha.")
+
+  st.subheader("📋 Créditos otorgados en esta fecha")
+  if creditos_del_dia:
+    st.dataframe(pd.DataFrame(creditos_del_dia), use_container_width=True)
+  else:
+    st.info("No se otorgaron créditos en esta fecha específica.")
+
+  st.subheader("💳 Detalle de pagos/abonos recibidos en la fecha")
+  if not df_filtrado_fecha.empty:
+    st.dataframe(df_filtrado_fecha, use_container_width=True)
+  else:
+    st.info("No hay transacciones de cobro registradas para esta fecha.")
 
 # ---------------------------------------------------------
 # 4. HISTORIAL Y CRÉDITOS CERRADOS
