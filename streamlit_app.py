@@ -372,13 +372,14 @@ elif menu == "Panel de Cobros y Pagos":
     st.subheader("🔒 Cerrar Crédito")
     pendientes_restantes = len(st.session_state.pagos[(st.session_state.pagos["ID_Credito"] == id_activo) & (st.session_state.pagos["Estado"] != "Pagado")])
 
-    if pendientes_restantes == 0:
+    if pendientes_restantes == 0 or saldo_restante <= 0:
+      st.success("🎉 ¡El saldo restante es $0.00! El crédito está listo para ser cerrado.")
       if st.button("Cerrar Crédito Finalizado"):
         for c in st.session_state.creditos:
           if c['ID'] == id_activo:
             c['Estado'] = "Cerrado"
         guardar_en_sheets()
-        st.success("🔒 El crédito se ha cerrado correctamente.")
+        st.success("🔒 El crédito se ha cerrado correctamente y sus abonos quedaron guardados en el historial desplegable.")
         st.rerun()
     else:
       if st.button("Forzar Cierre de Crédito"):
@@ -401,11 +402,9 @@ elif menu == "Historial de Pagos del Día":
   fechas_caja = st.session_state.caja_diaria["Fecha"].unique().tolist() if not st.session_state.caja_diaria.empty else []
   fechas_reposiciones = st.session_state.reposiciones["Fecha"].unique().tolist() if not st.session_state.reposiciones.empty else []
 
-  # INCLUSIÓN SIEMPRE DEL DÍA DE HOY
   hoy_str = str(datetime.date.today())
   fechas_disponibles = sorted(list(set(fechas_transacciones + fechas_prestamos + fechas_gastos + fechas_caja + fechas_reposiciones + [hoy_str])))
 
-  # Seleccionar automáticamente el día de hoy por defecto
   idx_defecto = fechas_disponibles.index(hoy_str) if hoy_str in fechas_disponibles else len(fechas_disponibles) - 1
   fecha_seleccionada = st.selectbox("Seleccionar Fecha de Operación", fechas_disponibles, index=idx_defecto)
 
@@ -651,16 +650,69 @@ elif menu == "Historial de Pagos del Día":
     st.info("No hay transacciones de cobro registradas para esta fecha.")
 
 # ---------------------------------------------------------
-# 4. HISTORIAL Y CRÉDITOS CERRADOS
+# 4. HISTORIAL Y CRÉDITOS CERRADOS (CON DESPLEGABLES DE ABONOS)
 # ---------------------------------------------------------
 elif menu == "Historial y Créditos Cerrados":
-  st.header("📂 Historial General de Créditos")
+  st.header("📂 Historial General y Créditos Cerrados")
 
   if not st.session_state.creditos:
     st.info("No hay registros de créditos creados.")
   else:
+    # 1. Tabla Resumen General
+    st.subheader("📊 Resumen de Todos los Créditos")
     df_creditos = pd.DataFrame(st.session_state.creditos)
     st.dataframe(df_creditos, use_container_width=True)
 
-    st.subheader("Detalle completo de todas las cuotas")
-    st.dataframe(st.session_state.pagos, use_container_width=True)
+    st.markdown("---")
+    st.subheader("📜 Registro Desplegable de Abonos (Créditos Cerrados o Finalizados)")
+
+    # Filtrar créditos cerrados o que ya están pagados por completo ($0 restante)
+    lista_cerrados_o_cero = []
+    for c in st.session_state.creditos:
+      id_c = c["ID"]
+      df_p_c = st.session_state.pagos[st.session_state.pagos["ID_Credito"] == id_c]
+      monto_tot = float(c.get("Monto_Total", 0))
+      tot_abonado = float(df_p_c["Monto_Pagado"].sum()) if not df_p_c.empty else 0.0
+      saldo_restante = monto_tot - tot_abonado
+
+      if c.get("Estado") == "Cerrado" or saldo_restante <= 0.01:
+        lista_cerrados_o_cero.append((c, tot_abonado, saldo_restante))
+
+    if not lista_cerrados_o_cero:
+      st.info("Aún no hay créditos cerrados o con saldo $0.")
+    else:
+      for c_info, tot_abonado, saldo_restante in lista_cerrados_o_cero:
+        id_credito = c_info["ID"]
+        cliente = c_info["Cliente"]
+        monto_total = float(c_info["Monto_Total"])
+        estado = c_info.get("Estado", "Activo")
+
+        # Etiqueta visual para el acordeón desplegable
+        estado_label = "🔒 CERRADO" if estado == "Cerrado" else "✅ SALDO $0 (Listo para cerrar)"
+        titulo_expander = f"{estado_label} | Crédito #{id_credito} - {cliente} (Total: ${monto_total:.2f} | Abonado: ${tot_abonado:.2f})"
+
+        with st.expander(titulo_expander):
+          col_exp1, col_exp2 = st.columns(2)
+
+          with col_exp1:
+            st.markdown("##### 💳 Historial de Abonos Recibidos")
+            if not st.session_state.transacciones.empty:
+              df_t_credito = st.session_state.transacciones[st.session_state.transacciones["ID_Credito"] == id_credito]
+              if not df_t_credito.empty:
+                df_abonos_ver = df_t_credito[["Fecha_Pago", "Monto_Abonado", "Metodo_Pago", "Descripcion"]].copy()
+                df_abonos_ver.columns = ["Fecha", "Monto Abonado", "Método", "Nota / Descripción"]
+                st.dataframe(df_abonos_ver.reset_index(drop=True), use_container_width=True)
+              else:
+                st.info("No hay registro de abonos individuales para este crédito.")
+            else:
+              st.info("No hay transacciones registradas.")
+
+          with col_exp2:
+            st.markdown("##### 📋 Estado Final de Cuotas")
+            df_p_credito = st.session_state.pagos[st.session_state.pagos["ID_Credito"] == id_credito]
+            if not df_p_credito.empty:
+              df_cuotas_ver = df_p_credito[["Cuota_N", "Monto_Cuota", "Monto_Pagado", "Estado", "Metodo_Pago", "Fecha_Pago"]].copy()
+              df_cuotas_ver.columns = ["Cuota #", "Valor Cuota", "Pagado", "Estado", "Método", "Fecha Pago"]
+              st.dataframe(df_cuotas_ver.reset_index(drop=True), use_container_width=True)
+            else:
+              st.info("No hay información de cuotas.")
