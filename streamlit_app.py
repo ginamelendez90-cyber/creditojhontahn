@@ -649,8 +649,50 @@ elif menu == "Historial de Pagos del Día":
   else:
     st.info("No hay transacciones de cobro registradas para esta fecha.")
 
+  # NUEVA SECCIÓN: CRÉDITOS LIQUIDADOS / EN $0 EN ESTA FECHA
+  st.subheader("🎉 Créditos liquidados (llegaron a $0) en esta fecha")
+  creditos_cancelados_hoy = []
+  if not st.session_state.transacciones.empty and "Fecha_Pago" in st.session_state.transacciones.columns:
+    df_trans = st.session_state.transacciones.copy()
+    df_trans["Monto_Abonado"] = pd.to_numeric(df_trans["Monto_Abonado"], errors="coerce").fillna(0.0)
+
+    # Buscar abonos realizados en la fecha seleccionada
+    trans_hoy = df_trans[df_trans["Fecha_Pago"] == fecha_seleccionada]
+    ids_con_pago_hoy = trans_hoy["ID_Credito"].unique()
+
+    for id_c in ids_con_pago_hoy:
+      cred_info = next((c for c in st.session_state.creditos if c["ID"] == id_c), None)
+      if cred_info:
+        monto_tot = float(cred_info.get("Monto_Total", 0))
+
+        # Total abonado hasta hoy
+        df_hasta_hoy = df_trans[(df_trans["ID_Credito"] == id_c) & (df_trans["Fecha_Pago"] <= fecha_seleccionada)]
+        total_hasta_hoy = float(df_hasta_hoy["Monto_Abonado"].sum())
+
+        # Total abonado antes de hoy
+        df_antes = df_trans[(df_trans["ID_Credito"] == id_c) & (df_trans["Fecha_Pago"] < fecha_seleccionada)]
+        total_antes = float(df_antes["Monto_Abonado"].sum())
+
+        saldo_antes = monto_tot - total_antes
+        saldo_hoy = monto_tot - total_hasta_hoy
+
+        # Si antes tenía deuda y hoy quedó en $0 o menos
+        if saldo_antes > 0.01 and saldo_hoy <= 0.01:
+          creditos_cancelados_hoy.append({
+              "ID Crédito": id_c,
+              "Cliente": cred_info["Cliente"],
+              "Monto Total Deuda": f"${monto_tot:.2f}",
+              "Total Abonado": f"${total_hasta_hoy:.2f}",
+              "Estado Actual": "🔒 Cerrado" if cred_info.get("Estado") == "Cerrado" else "✅ Saldo $0",
+          })
+
+  if creditos_cancelados_hoy:
+    st.dataframe(pd.DataFrame(creditos_cancelados_hoy), use_container_width=True)
+  else:
+    st.info("No hubo créditos liquidados a $0 en esta fecha específica.")
+
 # ---------------------------------------------------------
-# 4. HISTORIAL Y CRÉDITOS CERRADOS (CON DESPLEGABLES DE ABONOS)
+# 4. HISTORIAL Y CRÉDITOS CERRADOS
 # ---------------------------------------------------------
 elif menu == "Historial y Créditos Cerrados":
   st.header("📂 Historial General y Créditos Cerrados")
@@ -666,7 +708,6 @@ elif menu == "Historial y Créditos Cerrados":
     st.markdown("---")
     st.subheader("📜 Registro Desplegable de Abonos (Créditos Cerrados o Finalizados)")
 
-    # Filtrar créditos cerrados o que ya están pagados por completo ($0 restante)
     lista_cerrados_o_cero = []
     for c in st.session_state.creditos:
       id_c = c["ID"]
@@ -687,7 +728,6 @@ elif menu == "Historial y Créditos Cerrados":
         monto_total = float(c_info["Monto_Total"])
         estado = c_info.get("Estado", "Activo")
 
-        # Etiqueta visual para el acordeón desplegable
         estado_label = "🔒 CERRADO" if estado == "Cerrado" else "✅ SALDO $0 (Listo para cerrar)"
         titulo_expander = f"{estado_label} | Crédito #{id_credito} - {cliente} (Total: ${monto_total:.2f} | Abonado: ${tot_abonado:.2f})"
 
