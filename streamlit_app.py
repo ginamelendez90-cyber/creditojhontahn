@@ -143,13 +143,15 @@ def guardar_en_sheets():
       except Exception:
         ws = sh.add_worksheet(title=name, rows="1000", cols="20")
 
-      ws.clear()
+      # PROTECCIÓN: Solo limpiar y escribir si el DataFrame contiene información
       if not df.empty:
+        ws.clear()
         df_limpio = df.fillna("")
         data_to_write = [df_limpio.columns.values.tolist()] + df_limpio.values.tolist()
         ws.update(data_to_write)
       else:
-        ws.append_row(df.columns.tolist())
+        if len(ws.get_all_values()) == 0:
+          ws.append_row(df.columns.tolist())
   except Exception as e:
     st.error(f"Error al sincronizar con Google Sheets: {e}")
 
@@ -270,6 +272,31 @@ elif menu == "Panel de Cobros y Pagos":
   st.header("💵 Panel de Cobros Diarios y Semanales")
 
   creditos_activos = [c for c in st.session_state.creditos if c.get("Estado") == "Activo"]
+
+  # AUTOREGENERACIÓN: Si la tabla de pagos quedó vacía pero hay créditos activos
+  if creditos_activos and st.session_state.pagos.empty:
+    st.warning("⚠️ No se encontraron cuotas registradas en la hoja 'pagos'. Regenerando estructura automáticamente...")
+    nuevas_filas = []
+    for c in creditos_activos:
+      id_c = c["ID"]
+      plazo = int(c.get("Plazo", 24))
+      cuota_val = float(c.get("Cuota_Valor", 0.0))
+      for i in range(1, plazo + 1):
+        nuevas_filas.append({
+            "ID_Credito": id_c,
+            "Cuota_N": i,
+            "Monto_Cuota": cuota_val,
+            "Monto_Pagado": 0.0,
+            "Estado": "Pendiente",
+            "Metodo_Pago": "N/A",
+            "Fecha_Pago": "N/A",
+        })
+    df_p_reconstruido = pd.DataFrame(nuevas_filas)
+    df_p_reconstruido["Monto_Cuota"] = pd.to_numeric(df_p_reconstruido["Monto_Cuota"], errors="coerce").fillna(0.0)
+    df_p_reconstruido["Monto_Pagado"] = pd.to_numeric(df_p_reconstruido["Monto_Pagado"], errors="coerce").fillna(0.0)
+    st.session_state.pagos = df_p_reconstruido
+    guardar_en_sheets()
+    st.rerun()
 
   if not creditos_activos:
     st.info("No hay créditos activos en este momento. Crea uno nuevo.")
@@ -656,7 +683,6 @@ elif menu == "Historial de Pagos del Día":
     df_trans = st.session_state.transacciones.copy()
     df_trans["Monto_Abonado"] = pd.to_numeric(df_trans["Monto_Abonado"], errors="coerce").fillna(0.0)
 
-    # Buscar abonos realizados en la fecha seleccionada
     trans_hoy = df_trans[df_trans["Fecha_Pago"] == fecha_seleccionada]
     ids_con_pago_hoy = trans_hoy["ID_Credito"].unique()
 
@@ -665,18 +691,15 @@ elif menu == "Historial de Pagos del Día":
       if cred_info:
         monto_tot = float(cred_info.get("Monto_Total", 0))
 
-        # Total abonado hasta hoy
         df_hasta_hoy = df_trans[(df_trans["ID_Credito"] == id_c) & (df_trans["Fecha_Pago"] <= fecha_seleccionada)]
         total_hasta_hoy = float(df_hasta_hoy["Monto_Abonado"].sum())
 
-        # Total abonado antes de hoy
         df_antes = df_trans[(df_trans["ID_Credito"] == id_c) & (df_trans["Fecha_Pago"] < fecha_seleccionada)]
         total_antes = float(df_antes["Monto_Abonado"].sum())
 
         saldo_antes = monto_tot - total_antes
         saldo_hoy = monto_tot - total_hasta_hoy
 
-        # Si antes tenía deuda y hoy quedó en $0 o menos
         if saldo_antes > 0.01 and saldo_hoy <= 0.01:
           creditos_cancelados_hoy.append({
               "ID Crédito": id_c,
@@ -700,7 +723,6 @@ elif menu == "Historial y Créditos Cerrados":
   if not st.session_state.creditos:
     st.info("No hay registros de créditos creados.")
   else:
-    # 1. Tabla Resumen General
     st.subheader("📊 Resumen de Todos los Créditos")
     df_creditos = pd.DataFrame(st.session_state.creditos)
     st.dataframe(df_creditos, use_container_width=True)
