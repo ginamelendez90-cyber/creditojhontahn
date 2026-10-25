@@ -52,7 +52,8 @@ def cargar_datos(worksheet_name, columnas_por_defecto):
           df[col] = 0.0 if "Monto" in col or "Saldo" in col or "Gasto" in col else ""
       return df
     except Exception:
-      ws = sh.add_worksheet(title=worksheet_name, rows="1000", cols="20")
+      # Se crea la pestaña con solo 2 filas iniciales para evitar sobrecargar la hoja
+      ws = sh.add_worksheet(title=worksheet_name, rows="2", cols=str(len(columnas_por_defecto)))
       ws.append_row(columnas_por_defecto)
       return pd.DataFrame(columns=columnas_por_defecto)
   except Exception as e:
@@ -141,15 +142,19 @@ def guardar_en_sheets():
       try:
         ws = sh.worksheet(name)
       except Exception:
-        ws = sh.add_worksheet(title=name, rows="1000", cols="20")
+        num_cols = len(df.columns) if not df.empty else 10
+        ws = sh.add_worksheet(title=name, rows="2", cols=str(num_cols))
 
       ws.clear()
       if not df.empty:
         df_limpio = df.fillna("")
         data_to_write = [df_limpio.columns.values.tolist()] + df_limpio.values.tolist()
         ws.update(data_to_write)
+        # Redimensiona la pestaña para ajustar el número exacto de filas necesarias
+        ws.resize(rows=len(data_to_write), cols=len(df_limpio.columns))
       else:
         ws.append_row(df.columns.tolist())
+        ws.resize(rows=2, cols=len(df.columns))
   except Exception as e:
     st.error(f"Error al sincronizar con Google Sheets: {e}")
 
